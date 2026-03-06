@@ -1,0 +1,29 @@
+<resources>
+    <string name="app_name">Destination</string>
+    <string name="nuclear_mode_title">Nuclear Focus Mode</string>
+    <string name="apply_now">Re-apply Policy</string>
+    <string name="open_diagnostics">Open Diagnostics</string>
+    <string name="debug_recovery_exit">Debug Recovery Exit</string>
+    <string name="provisioning_guide">Provisioning Guide</string>
+    <string name="manage_emergency_apps">Manage Emergency Apps</string>
+    <string name="manage_schedules">Manage Schedules</string>
+    <string name="start_vpn_stub">Start VPN Stub</string>
+    <string name="stop_vpn_stub">Stop VPN Stub</string>
+    <string name="copy_qr_json">Copy QR JSON</string>
+    <string name="save_emergency_apps">Save Emergency Apps</string>
+    <string name="preview_resolved_allowlist">Preview Resolved Allowlist</string>
+    <string name="add_custom_package">Add Custom Package</string>
+    <string name="custom_package_hint">com.example.app</string>
+    <string name="refresh">Refresh</string>
+    <string name="reapply">Re-apply Desired Mode</string>
+    <string name="provisioning_compliance_title">Provisioning Compliance</string>
+    <string name="complete_enrollment">Complete Enrollment</string>
+    <string name="open_destination">Open Destination</string>
+    <string name="not_do_blocked">This device is not enrolled as Device Owner. Nuclear controls are blocked.</string>
+    <string name="do_ready">Device Owner active. Policy controls are enabled.</string>
+    <string name="recovery_pin_title">Debug Recovery PIN</string>
+    <string name="recovery_pin_hint">Enter PIN</string>
+    <string name="cancel">Cancel</string>
+    <string name="confirm">Confirm</string>
+</resources>
+
