@@ -40,7 +40,7 @@ Because Destination requires system-level privileges to suspend packages, it **m
         ```bash
         adb shell dumpsys account
         ```
-    *   Ensure the output shows no active accounts.
+    *   Ensure the output shows no active accounts, if it shows any apps and their accounts, uninstall those apps temporarily.
 
 3.  **Set Device Owner**: Run the following ADB command to grant Destination Device Owner privileges:
     ```bash
