@@ -27,44 +27,71 @@ object ScheduleEvaluator {
         blocks: List<ScheduleBlock>,
         blockGroups: Map<Long, Set<String>> = emptyMap()
     ): ScheduleDecision {
-        val enabled = blocks.filter { it.enabled && it.kind == ScheduleBlockKind.GROUPS.name }
-        FocusLog.d(FocusEventId.SCHEDULE_EVAL, "┌── ScheduleEvaluator.evaluate() total=${blocks.size} enabled=${enabled.size}")
+        val enabled = blocks.filter { it.enabled && hasValidWindow(it) }
+        val groupBlocks = enabled.filter { it.kind == ScheduleBlockKind.GROUPS.name }
+        val nuclearBlocks = enabled.filter { it.kind == ScheduleBlockKind.NUCLEAR.name }
+        FocusLog.d(
+            FocusEventId.SCHEDULE_EVAL,
+            "┌─── ScheduleEvaluator.evaluate() total=${blocks.size} enabled=${enabled.size} groups=${groupBlocks.size} nuclear=${nuclearBlocks.size}"
+        )
         if (enabled.isEmpty()) {
-            FocusLog.d(FocusEventId.SCHEDULE_EVAL, "└── No enabled group schedules")
+            FocusLog.d(FocusEventId.SCHEDULE_EVAL, "└─── No enabled schedules")
             return ScheduleDecision(false, false, emptySet(), "No schedules", emptySet(), null)
         }
 
-        val active = enabled.filter { isActive(it, now) }
-        val strictActive = active.any { it.strict }
-        val blockedGroupIds = active.flatMap { blockGroups[it.id].orEmpty() }.toSet()
-        val activeNames = active.joinToString(", ") { it.name }
-        val reason = if (strictActive) {
-            "Strict group schedule active: $activeNames"
-        } else if (active.isNotEmpty()) {
-            "Group schedule active: $activeNames"
-        } else {
-            "Outside scheduled blocks"
+        val activeGroups = groupBlocks.filter { isActive(it, now) }
+        val activeNuclear = nuclearBlocks.filter { isActive(it, now) }
+        val shouldLock = activeNuclear.isNotEmpty()
+        val strictActive = activeGroups.any { it.strict }
+        val blockedGroupIds = activeGroups.flatMap { blockGroups[it.id].orEmpty() }.toSet()
+        val groupNames = activeGroups.joinToString(", ") { it.name }
+        val nuclearNames = activeNuclear.joinToString(", ") { it.name }
+        val reason = when {
+            shouldLock && strictActive ->
+                "Nuclear schedule active: $nuclearNames | Strict group schedule active: $groupNames"
+            shouldLock -> "Nuclear schedule active: $nuclearNames"
+            strictActive -> "Strict group schedule active: $groupNames"
+            activeGroups.isNotEmpty() -> "Group schedule active: $groupNames"
+            else -> "Outside scheduled blocks"
         }
+
         val next = computeNextTransition(now, enabled)
 
-        FocusLog.d(FocusEventId.SCHEDULE_EVAL, "│ active=${active.size} strict=$strictActive blockedGroups=${blockedGroupIds.size}")
-        if (active.isNotEmpty()) {
-            active.forEach { block ->
+        FocusLog.d(
+            FocusEventId.SCHEDULE_EVAL,
+            "│ activeGroups=${activeGroups.size} activeNuclear=${activeNuclear.size} strictGroups=$strictActive blockedGroups=${blockedGroupIds.size}"
+        )
+        if (activeGroups.isNotEmpty()) {
+            activeGroups.forEach { block ->
                 val groups = blockGroups[block.id].orEmpty()
-                FocusLog.d(FocusEventId.SCHEDULE_EVAL, "│   active block: id=${block.id} name=${block.name} strict=${block.strict} start=${block.startMinute} end=${block.endMinute} groups=${groups.joinToString(",")}")
+                FocusLog.d(
+                    FocusEventId.SCHEDULE_EVAL,
+                    "│   active block: id=${block.id} name=${block.name} strict=${block.strict} start=${block.startMinute} end=${block.endMinute} groups=${groups.joinToString(",")}"
+                )
+            }
+        }
+        if (activeNuclear.isNotEmpty()) {
+            activeNuclear.forEach { block ->
+                FocusLog.d(
+                    FocusEventId.SCHEDULE_EVAL,
+                    "│   nuclear block: id=${block.id} name=${block.name} start=${block.startMinute} end=${block.endMinute}"
+                )
             }
         }
         if (blockedGroupIds.isNotEmpty()) {
-            FocusLog.d(FocusEventId.SCHEDULE_EVAL, "│ blockedGroupIds: ${blockedGroupIds.joinToString(",")}")
+            FocusLog.d(
+                FocusEventId.SCHEDULE_EVAL,
+                "│ blockedGroupIds: ${blockedGroupIds.joinToString(",")}"
+            )
         }
-        FocusLog.d(FocusEventId.SCHEDULE_EVAL, "└── nextTransition=${next} reason=$reason")
+        FocusLog.d(FocusEventId.SCHEDULE_EVAL, "└─── nextTransition=${next} reason=$reason")
 
         return ScheduleDecision(
-            shouldLock = active.isNotEmpty(),
+            shouldLock = shouldLock,
             strictActive = strictActive,
             blockedGroupIds = blockedGroupIds,
             reason = reason,
-            activeBlockIds = active.map { it.id }.toSet(),
+            activeBlockIds = (activeGroups.asSequence() + activeNuclear.asSequence()).map { it.id }.toSet(),
             nextTransitionAt = next
         )
     }
@@ -99,22 +126,30 @@ object ScheduleEvaluator {
             enabled.forEach { block ->
                 if ((block.daysMask and dayBit) == 0) return@forEach
 
-                val startCandidate = resolveZoned(date, block.startMinute, zone)
+                val startCandidates = resolveZonedCandidates(date, block.startMinute, zone)
                 val endDate = if (block.isCrossMidnight()) date.plusDays(1) else date
-                val endCandidate = resolveZoned(endDate, block.endMinute, zone)
+                val endCandidates = resolveZonedCandidates(endDate, block.endMinute, zone)
 
-                if (startCandidate.isAfter(startSearch)) {
-                    if (best == null || startCandidate.isBefore(best)) best = startCandidate
+                startCandidates.forEach { startCandidate ->
+                    if (startCandidate.isAfter(startSearch) && (best == null || startCandidate.isBefore(best))) {
+                        best = startCandidate
+                    }
                 }
-                if (endCandidate.isAfter(startSearch)) {
-                    if (best == null || endCandidate.isBefore(best)) best = endCandidate
+                endCandidates.forEach { endCandidate ->
+                    if (endCandidate.isAfter(startSearch) && (best == null || endCandidate.isBefore(best))) {
+                        best = endCandidate
+                    }
                 }
             }
         }
         return best
     }
 
-    private fun resolveZoned(date: LocalDate, minuteOfDay: Int, zone: ZoneId): ZonedDateTime {
+    private fun resolveZonedCandidates(
+        date: LocalDate,
+        minuteOfDay: Int,
+        zone: ZoneId
+    ): List<ZonedDateTime> {
         val clamped = minuteOfDay.coerceIn(0, 1439)
         val localTime = LocalTime.of(clamped / 60, clamped % 60)
         val ldt = LocalDateTime.of(date, localTime)
@@ -122,12 +157,13 @@ object ScheduleEvaluator {
         val offsets = rules.getValidOffsets(ldt)
 
         return when {
-            offsets.size == 1 -> ZonedDateTime.ofLocal(ldt, zone, offsets.first())
             offsets.isEmpty() -> {
                 val transition = rules.getTransition(ldt)
-                transition.dateTimeAfter.atZone(zone)
+                listOf(transition.dateTimeAfter.atZone(zone))
             }
-            else -> ZonedDateTime.ofLocal(ldt, zone, offsets.first())
+            else -> offsets.map { offset ->
+                ZonedDateTime.ofLocal(ldt, zone, offset)
+            }
         }
     }
 

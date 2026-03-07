@@ -3,6 +3,7 @@ package com.ankit.destination
 import android.app.Activity
 import android.app.Application
 import android.os.Bundle
+import com.ankit.destination.packages.PackageChangeReceiver
 import com.ankit.destination.schedule.AlarmScheduler
 import com.ankit.destination.usage.UsageAccessMonitor
 
@@ -16,6 +17,7 @@ class DestinationApplication : Application() {
             requestPolicyRefreshIfChanged = false
         )
         AlarmScheduler(this).scheduleUsageAccessPollIfNeeded()
+        PackageChangeReceiver.ensureRuntimeRegistration(this)
         registerActivityLifecycleCallbacks(
             object : ActivityLifecycleCallbacks {
                 private var startedActivityCount: Int = 0

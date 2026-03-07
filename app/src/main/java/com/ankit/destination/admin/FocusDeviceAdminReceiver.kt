@@ -9,10 +9,12 @@ import com.ankit.destination.policy.FocusLog
 import com.ankit.destination.policy.ProvisioningConfig
 import com.ankit.destination.policy.ProvisioningCoordinator
 import com.ankit.destination.ui.ProvisioningComplianceActivity
+import com.ankit.destination.packages.PackageChangeReceiver
 
 class FocusDeviceAdminReceiver : DeviceAdminReceiver() {
     override fun onEnabled(context: Context, intent: Intent) {
         FocusLog.i(FocusEventId.ADMIN_ENABLED, "Device admin enabled")
+        PackageChangeReceiver.ensureRuntimeRegistration(context)
     }
 
     override fun onDisabled(context: Context, intent: Intent) {

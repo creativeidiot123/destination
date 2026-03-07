@@ -3,6 +3,7 @@ package com.ankit.destination.ui.device
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ankit.destination.enforce.PolicyApplyOrchestrator
 import com.ankit.destination.data.GlobalControls
 import com.ankit.destination.data.ManagedNetworkModeSetting
 import com.ankit.destination.policy.PolicyEngine
@@ -294,7 +295,10 @@ class DeviceControlsViewModel(
                 runCatching {
                     val updated = transform(policyEngine.getGlobalControlsAsync())
                     policyEngine.setGlobalControlsAsync(updated)
-                    policyEngine.requestApplyNow(reason = "overview_controls")
+                    PolicyApplyOrchestrator.applyNow(
+                        context = appContext,
+                        reason = "overview_controls"
+                    )
                 }
             }
             result.onSuccess {

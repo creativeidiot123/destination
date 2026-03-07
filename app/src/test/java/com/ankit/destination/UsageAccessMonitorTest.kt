@@ -17,6 +17,13 @@ class UsageAccessMonitorTest {
         )
         assertFalse(
             UsageAccessMonitor.shouldReuseRecentRefresh(
+                lastCheckAtMs = 2_000L,
+                nowMs = 1_000L,
+                minimumIntervalMs = 750L
+            )
+        )
+        assertFalse(
+            UsageAccessMonitor.shouldReuseRecentRefresh(
                 lastCheckAtMs = 1_000L,
                 nowMs = 1_800L,
                 minimumIntervalMs = 750L
@@ -89,6 +96,19 @@ class UsageAccessMonitorTest {
                 op = "android:get_usage_stats",
                 packageName = "com.other.app",
                 ownPackageName = "com.ankit.destination"
+            )
+        )
+    }
+
+    @Test
+    fun shouldSuppressPolicyRefresh_clockMovedBackwards_neverSuppresses() {
+        assertFalse(
+            UsageAccessMonitor.shouldSuppressPolicyRefresh(
+                lastPolicyRefreshGranted = false,
+                nextUsageAccessGranted = false,
+                lastPolicyRefreshAtMs = 2_000L,
+                nowMs = 1_000L,
+                debounceMs = 1_000L
             )
         )
     }

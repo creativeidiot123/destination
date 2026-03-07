@@ -3,6 +3,7 @@ package com.ankit.destination.ui.apprules
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ankit.destination.enforce.PolicyApplyOrchestrator
 import com.ankit.destination.policy.PolicyEngine
 import com.ankit.destination.security.AppLockManager
 import com.ankit.destination.ui.AppOption
@@ -147,7 +148,10 @@ class AppRulesViewModel(
                             }
                         }
                     }
-                    policyEngine.requestApplyNow(reason = "app_rules_add")
+                    PolicyApplyOrchestrator.applyNow(
+                        context = appContext,
+                        reason = "app_rules_add"
+                    )
                 }
             }
             handleMutationResult(result, "Rules updated.")
@@ -175,7 +179,10 @@ class AppRulesViewModel(
                             policyEngine.removeUninstallProtectedAppAsync(rule.packageName)
                         }
                     }
-                    policyEngine.requestApplyNow(reason = "app_rules_remove")
+                    PolicyApplyOrchestrator.applyNow(
+                        context = appContext,
+                        reason = "app_rules_remove"
+                    )
                 }
             }
             handleMutationResult(result, "Rule removed.")

@@ -2,6 +2,7 @@ package com.ankit.destination.schedule
 
 import android.app.Activity
 import android.content.Context
+import com.ankit.destination.enforce.PolicyApplyOrchestrator
 import com.ankit.destination.policy.EngineResult
 import com.ankit.destination.policy.FocusEventId
 import com.ankit.destination.policy.FocusLog
@@ -24,19 +25,33 @@ class ScheduleEnforcer(context: Context) {
         hostActivity: Activity? = null,
         includeBudgets: Boolean = true
     ): ScheduleEnforceResult {
-        FocusLog.d(FocusEventId.SCHEDULE_EVAL, "┌── ScheduleEnforcer.enforceNow() trigger=$trigger includeBudgets=$includeBudgets")
+        FocusLog.d(
+            FocusEventId.SCHEDULE_EVAL,
+            "ScheduleEnforcer.enforceNow() trigger=$trigger includeBudgets=$includeBudgets"
+        )
         val startNs = System.nanoTime()
-        val result = policyEngine.requestApplyNow(hostActivity = hostActivity, reason = trigger)
+        val result = PolicyApplyOrchestrator.applyNowBlocking(
+            context = appContext,
+            reason = trigger,
+            hostActivity = hostActivity
+        )
         val applyMs = (System.nanoTime() - startNs) / 1_000_000.0
-        FocusLog.d(FocusEventId.SCHEDULE_EVAL, "│ policy applied in %.1fms success=${result.success}".format(applyMs))
-        FocusLog.d(FocusEventId.SCHEDULE_EVAL, "└── ScheduleEnforcer.enforceNow() done")
+        FocusLog.d(
+            FocusEventId.SCHEDULE_EVAL,
+            "policy applied in %.1fms success=${result.success}".format(applyMs)
+        )
+        FocusLog.d(FocusEventId.SCHEDULE_EVAL, "ScheduleEnforcer.enforceNow() done")
         return ScheduleEnforceResult(policyResult = result)
     }
 
     fun isScheduleLockActiveNow(): Boolean {
         val snapshot = policyEngine.diagnosticsSnapshot()
         val active = snapshot.scheduleBlockedGroups.isNotEmpty()
-        FocusLog.v(FocusEventId.SCHEDULE_EVAL, "isScheduleLockActiveNow=$active blockedGroups=${snapshot.scheduleBlockedGroups.size}")
+        FocusLog.v(
+            FocusEventId.SCHEDULE_EVAL,
+            "isScheduleLockActiveNow=$active blockedGroups=${snapshot.scheduleBlockedGroups.size}"
+        )
         return active
     }
 }
+

@@ -4,8 +4,10 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ankit.destination.budgets.BudgetOrchestrator
+import com.ankit.destination.enforce.PolicyApplyOrchestrator
 import com.ankit.destination.budgets.clampEmergencyMinutesPerUnlock
 import com.ankit.destination.budgets.clampEmergencyUnlocksPerDay
+import com.ankit.destination.data.EmergencyStateMerger
 import com.ankit.destination.data.EmergencyTargetType
 import com.ankit.destination.data.FocusDatabase
 import com.ankit.destination.data.GroupLimit
@@ -94,11 +96,16 @@ class GroupListViewModel(
                     limit.groupId to scheduleDao.getBlocksForGroup(limit.groupId).firstOrNull()
                 }
                 budgetDao.clearExpiredEmergencyStateBefore(dayKey, nowMs)
-                val emergencyStates = budgetDao
+                val mergedEmergencyStates = EmergencyStateMerger.merge(
+                    dayKey = dayKey,
+                    nowMs = nowMs,
+                    rows = budgetDao
                     .getCurrentOrActiveEmergencyStates(dayKey, nowMs)
                     .asSequence()
                     .filter { it.targetType == EmergencyTargetType.GROUP.name }
-                    .associateBy { it.targetId }
+                    .toList()
+                )
+                val emergencyStates = mergedEmergencyStates.associateBy { it.targetId }
 
                 GroupListUiState(
                     groups = limits
@@ -180,7 +187,10 @@ class GroupListViewModel(
                         targetId = normalizedGroupId
                     ).also { unlockResult ->
                         if (unlockResult.success) {
-                            policyEngine.requestApplyNow(reason = "group_emergency_activate:$normalizedGroupId")
+                            PolicyApplyOrchestrator.applyNow(
+                                context = appContext,
+                                reason = "group_emergency_activate:$normalizedGroupId"
+                            )
                         }
                     }
                 }

@@ -9,7 +9,9 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.DayOfWeek
+import java.time.LocalDateTime
 import java.time.ZoneId
+import java.time.ZoneOffset
 import java.time.ZonedDateTime
 
 class ScheduleEvaluatorTest {
@@ -287,6 +289,22 @@ class ScheduleEvaluatorTest {
 
         assertTrue(decision.strictActive)
         assertTrue(decision.reason.contains("Strict group schedule active"))
+    }
+
+    @Test fun `36 fall-back dst overlap chooses second-occurrence transition when now is in second hour`() {
+        val now = ZonedDateTime.ofLocal(
+            LocalDateTime.of(2026, 11, 1, 1, 20),
+            ny,
+            ZoneOffset.ofHours(-5)
+        )
+        val blocks = listOf(block(days = sun, start = 90, end = 105))
+        val next = ScheduleEvaluator.computeNextTransition(now, blocks)
+        val expected = ZonedDateTime.ofLocal(
+            LocalDateTime.of(2026, 11, 1, 1, 30),
+            ny,
+            ZoneOffset.ofHours(-5)
+        )
+        assertEquals(expected, next)
     }
 
     private fun block(

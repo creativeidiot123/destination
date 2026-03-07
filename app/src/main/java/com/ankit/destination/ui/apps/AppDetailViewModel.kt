@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ankit.destination.budgets.BudgetOrchestrator
+import com.ankit.destination.enforce.PolicyApplyOrchestrator
 import com.ankit.destination.budgets.clampEmergencyMinutesPerUnlock
 import com.ankit.destination.budgets.clampEmergencyUnlocksPerDay
 import com.ankit.destination.data.AppPolicy
@@ -187,7 +188,10 @@ class AppDetailViewModel(
                             minutesPerUnlock = state.emergencyMinutesPerUnlock
                         )
                     )
-                    policyEngine.requestApplyNow(reason = "app_detail_save:$packageName")
+                    PolicyApplyOrchestrator.applyNow(
+                        context = appContext,
+                        reason = "app_detail_save:$packageName"
+                    )
                 }
             }
 

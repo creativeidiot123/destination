@@ -52,19 +52,8 @@ class AlarmScheduler(private val context: Context) {
 
     fun scheduleUsageAccessPollIfNeeded(delayMs: Long = USAGE_ACCESS_POLL_DELAY_MS) {
         val alarmManager = context.getSystemService(AlarmManager::class.java) ?: return
-        val existing = PendingIntent.getBroadcast(
-            context,
-            USAGE_ACCESS_POLL_REQUEST_CODE,
-            Intent(context, ScheduleTickReceiver::class.java).apply {
-                action = ACTION_USAGE_ACCESS_POLL
-            },
-            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
-        )
-        if (existing != null) {
-            FocusLog.v(FocusEventId.ALARM_SCHEDULE, "scheduleUsageAccessPoll: already exists, skipping")
-            return
-        }
         val pi = usageAccessPollPendingIntent()
+        alarmManager.cancel(pi)
         val triggerAtMs = System.currentTimeMillis() + delayMs
         alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMs, pi)
         FocusLog.d(FocusEventId.ALARM_SCHEDULE, "scheduleUsageAccessPoll: scheduled in ${delayMs}ms")

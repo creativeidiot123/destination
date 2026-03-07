@@ -5,11 +5,10 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import com.ankit.destination.enforce.EnforcementExecutor
+import com.ankit.destination.enforce.PolicyApplyOrchestrator
 import com.ankit.destination.policy.FocusEventId
 import com.ankit.destination.policy.FocusLog
 import com.ankit.destination.policy.PolicyEngine
-
 import com.ankit.destination.usage.UsageAccessMonitor
 
 class BootReceiver : BroadcastReceiver() {
@@ -17,50 +16,50 @@ class BootReceiver : BroadcastReceiver() {
         val action = intent.action ?: return
         val attempt = intent.getIntExtra(EXTRA_RETRY_ATTEMPT, 0)
         val pending = goAsync()
+        var requestEnqueued = false
 
-        FocusLog.i(FocusEventId.BOOT_REAPPLY, "┌── BootReceiver: action=$action attempt=$attempt")
-        EnforcementExecutor.executeLatest(
-            key = EXECUTOR_KEY,
-            onDropped = pending::finish
-        ) {
-            try {
-                UsageAccessMonitor.refreshNow(
-                    context = context,
-                    reason = "boot:$action",
-                    // Boot path will apply policy explicitly; do not trigger a second apply from the monitor.
-                    requestPolicyRefreshIfChanged = false
-                )
-                val engine = PolicyEngine(context)
-                if (!engine.isDeviceOwner()) {
-                    FocusLog.d(FocusEventId.BOOT_REAPPLY, "└── NOT device owner, skipping boot reapply")
-                    cancelRetry(context)
-                    return@executeLatest
-                }
+        FocusLog.i(FocusEventId.BOOT_REAPPLY, "BootReceiver: action=$action attempt=$attempt")
+        try {
+            UsageAccessMonitor.refreshNow(
+                context = context,
+                reason = "boot:$action",
+                requestPolicyRefreshIfChanged = false
+            )
+            val engine = PolicyEngine(context)
+            if (!engine.isDeviceOwner()) {
+                FocusLog.d(FocusEventId.BOOT_REAPPLY, "NOT device owner, skipping boot reapply")
+                cancelRetry(context)
+                return
+            }
 
-                FocusLog.i(FocusEventId.BOOT_REAPPLY, "│ Applying policy action=$action attempt=$attempt")
-                val result = engine.requestApplyNow(reason = "BootReceiver:$action")
-                FocusLog.d(FocusEventId.BOOT_REAPPLY, "│ apply: success=${result.success}")
-
+            requestEnqueued = true
+            PolicyApplyOrchestrator.requestApply(
+                context = context,
+                reason = "BootReceiver:$action"
+            ) { result ->
+                FocusLog.d(FocusEventId.BOOT_REAPPLY, "apply: success=${result.success}")
                 if (result.success) {
-                    FocusLog.i(FocusEventId.BOOT_REAPPLY, "└── ✅ Boot reapply SUCCESS")
+                    FocusLog.i(FocusEventId.BOOT_REAPPLY, "Boot reapply SUCCESS")
                     cancelRetry(context)
                 } else {
-                    FocusLog.w(FocusEventId.BOOT_REAPPLY, "│ Boot reapply FAILED")
+                    FocusLog.w(FocusEventId.BOOT_REAPPLY, "Boot reapply FAILED")
+                    if (attempt < RETRY_DELAYS_MS.size) {
+                        FocusLog.w(FocusEventId.BOOT_RETRY, "Scheduling retry attempt=${attempt + 1}")
+                        scheduleRetry(context, attempt + 1)
+                    }
                 }
-                if (!result.success && attempt < RETRY_DELAYS_MS.size) {
-                    FocusLog.w(FocusEventId.BOOT_RETRY, "└── Scheduling retry attempt=${attempt + 1}")
-                    scheduleRetry(context, attempt + 1)
-                }
-            } catch (t: Throwable) {
-                FocusLog.e(FocusEventId.BOOT_RETRY, "Boot reapply crashed", t)
-                val shouldRetry = runCatching {
-                    val engine = PolicyEngine(context)
-                    engine.isDeviceOwner()
-                }.getOrDefault(false)
-                if (shouldRetry && attempt < RETRY_DELAYS_MS.size) {
-                    scheduleRetry(context, attempt + 1)
-                }
-            } finally {
+                pending.finish()
+            }
+        } catch (t: Throwable) {
+            FocusLog.e(FocusEventId.BOOT_RETRY, "Boot reapply crashed", t)
+            val shouldRetry = runCatching {
+                PolicyEngine(context).isDeviceOwner()
+            }.getOrDefault(false)
+            if (shouldRetry && attempt < RETRY_DELAYS_MS.size) {
+                scheduleRetry(context, attempt + 1)
+            }
+        } finally {
+            if (!requestEnqueued) {
                 pending.finish()
             }
         }
@@ -80,7 +79,6 @@ class BootReceiver : BroadcastReceiver() {
             retryIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        // Retry after boot is best-effort; avoid exact-alarm requirements.
         alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMs, pendingIntent)
         FocusLog.w(FocusEventId.BOOT_RETRY, "Scheduled retry attempt=$attempt delayMs=$delayMs")
     }
@@ -99,11 +97,11 @@ class BootReceiver : BroadcastReceiver() {
         alarmManager.cancel(pendingIntent)
     }
 
-    companion object {
+    private companion object {
         const val ACTION_REAPPLY_RETRY = "com.ankit.destination.ACTION_REAPPLY_RETRY"
         private const val EXTRA_RETRY_ATTEMPT = "retry_attempt"
         private const val RETRY_REQUEST_CODE = 49001
-        private const val EXECUTOR_KEY = "boot-reapply"
         private val RETRY_DELAYS_MS = longArrayOf(5_000L, 30_000L, 120_000L)
     }
 }
+

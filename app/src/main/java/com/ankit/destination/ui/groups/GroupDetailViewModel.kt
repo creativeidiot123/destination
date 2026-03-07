@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.withTransaction
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ankit.destination.enforce.PolicyApplyOrchestrator
 import com.ankit.destination.budgets.clampEmergencyMinutesPerUnlock
 import com.ankit.destination.budgets.clampEmergencyUnlocksPerDay
 import com.ankit.destination.data.FocusDatabase
@@ -379,7 +380,10 @@ class GroupDetailViewModel(
                         }
                         scheduleDao.replaceGroupSchedules(finalGroupId, scheduleBlocks)
                     }
-                    policyEngine.requestApplyNow(reason = "group_detail_save:$finalGroupId")
+                    PolicyApplyOrchestrator.applyNow(
+                        context = appContext,
+                        reason = "group_detail_save:$finalGroupId"
+                    )
                 }
             }
 
@@ -421,7 +425,10 @@ class GroupDetailViewModel(
                         scheduleDao.replaceGroupSchedules(groupId, emptyList())
                         budgetDao.deleteGroupLimitCascade(groupId)
                     }
-                    policyEngine.requestApplyNow(reason = "group_detail_delete:$groupId")
+                    PolicyApplyOrchestrator.applyNow(
+                        context = appContext,
+                        reason = "group_detail_delete:$groupId"
+                    )
                 }
             }
 

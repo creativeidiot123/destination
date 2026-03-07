@@ -3,14 +3,69 @@ package com.ankit.destination.packages
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import com.ankit.destination.enforce.EnforcementExecutor
+import com.ankit.destination.enforce.PolicyApplyOrchestrator
 import com.ankit.destination.policy.FocusEventId
 import com.ankit.destination.policy.FocusLog
 import com.ankit.destination.policy.PackageResolver
 import com.ankit.destination.policy.PolicyEngine
+import com.ankit.destination.policy.PolicyStore
 
 
 class PackageChangeReceiver : BroadcastReceiver() {
+    companion object {
+        private const val EXECUTOR_KEY = "package-change"
+        private val pendingEvents = linkedMapOf<String, PendingPackageEvent>()
+        private const val PREF_KEY = "runtime_package_receiver"
+        private const val PREF_NAME = "destination_runtime_receivers"
+        private const val PREF_RUNTIME_REGISTERED = "package_change_runtime_registered"
+        private var runtimeRegistered = false
+        private var runtimeReceiver: PackageChangeReceiver? = null
+
+        fun ensureRuntimeRegistration(context: Context) {
+            if (runtimeRegistered) return
+            synchronized(PendingPackageEvent) {
+                if (runtimeRegistered) return
+                runCatching {
+                    val filter = IntentFilter().apply {
+                        addAction(Intent.ACTION_PACKAGE_ADDED)
+                        addAction(Intent.ACTION_PACKAGE_REPLACED)
+                        addDataScheme("package")
+                    }
+                    val appContext = context.applicationContext
+                    val receiver = PackageChangeReceiver()
+                    @Suppress("DEPRECATION")
+                    appContext.registerReceiver(receiver, filter)
+                    runtimeReceiver = receiver
+                    runtimeRegistered = true
+                    FocusLog.i(FocusEventId.PACKAGE_INSTALL_DETECT, "Runtime package change receiver registered")
+                    markRuntimeRegistrationHandled(appContext)
+                }.onFailure { throwable ->
+                    FocusLog.e(
+                        FocusEventId.PACKAGE_INSTALL_DETECT,
+                        "Failed to register runtime package change receiver",
+                        throwable
+                    )
+                }
+            }
+        }
+
+        fun markRuntimeRegistrationHandled(context: Context) {
+            val prefs = context.applicationContext.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+            if (!prefs.getBoolean(PREF_RUNTIME_REGISTERED, false)) {
+                prefs.edit().putBoolean(PREF_RUNTIME_REGISTERED, true).apply()
+            }
+        }
+
+        @Suppress("unused")
+        fun clearRuntimeRegistrationState(context: Context) {
+            val prefs = context.applicationContext.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+            prefs.edit().remove(PREF_RUNTIME_REGISTERED).apply()
+            runtimeRegistered = false
+        }
+    }
+
     override fun onReceive(context: Context, intent: Intent?) {
         val action = intent?.action ?: return
         val packageName = intent.data?.schemeSpecificPart ?: return
@@ -24,7 +79,6 @@ class PackageChangeReceiver : BroadcastReceiver() {
             return
         }
 
-        FocusLog.i(FocusEventId.PACKAGE_INSTALL_DETECT, "PackageChangeReceiver: $action pkg=$packageName replacing=$replacing")
         val pending = goAsync()
         synchronized(pendingEvents) {
             val existing = pendingEvents[packageName]
@@ -37,22 +91,28 @@ class PackageChangeReceiver : BroadcastReceiver() {
             } else {
                 existing.action = action
                 existing.pendingResults += pending
-                FocusLog.v(FocusEventId.PACKAGE_INSTALL_DETECT, "  batched with existing event for $packageName")
+                FocusLog.v(FocusEventId.PACKAGE_INSTALL_DETECT, "batched with existing event for $packageName")
             }
         }
         EnforcementExecutor.executeLatest(EXECUTOR_KEY) {
-            val events = synchronized(pendingEvents) {
-                pendingEvents.values.toList().also { pendingEvents.clear() }
+            val eventsToProcess = synchronized(pendingEvents) {
+                val out = pendingEvents.values.toList()
+                pendingEvents.clear()
+                out
             }
-            if (events.isEmpty()) {
-                FocusLog.v(FocusEventId.PACKAGE_INSTALL_DETECT, "PackageChangeReceiver: no pending events")
+            if (eventsToProcess.isEmpty()) {
+                eventsToProcess.forEach { event ->
+                    event.pendingResults.forEach { result -> runCatching { result.finish() } }
+                }
                 return@executeLatest
             }
-            FocusLog.d(FocusEventId.PACKAGE_INSTALL_DETECT, "┌── PackageChangeReceiver processing ${events.size} events")
+
             try {
                 val engine = PolicyEngine(context)
                 if (!engine.isDeviceOwner()) {
-                    FocusLog.d(FocusEventId.PACKAGE_INSTALL_DETECT, "└── NOT device owner, skipping")
+                    eventsToProcess.forEach { event ->
+                        event.pendingResults.forEach { result -> runCatching { result.finish() } }
+                    }
                     return@executeLatest
                 }
 
@@ -64,64 +124,70 @@ class PackageChangeReceiver : BroadcastReceiver() {
                     userChosenEmergencyApps = engine.getEmergencyApps(),
                     alwaysAllowedApps = alwaysAllowed
                 ).packages
-
+                val store = PolicyStore(context)
                 var shouldEnforce = false
                 var trigger = "package_change"
 
-                events.forEach { event ->
+                if (store.isScheduleStrictComputed()) {
+                    eventsToProcess.forEach { event ->
+                        runCatching {
+                            engine.onNewPackageInstalledDuringStrictSchedule(event.packageName)
+                        }.onFailure { throwable ->
+                            FocusLog.e(
+                                FocusEventId.PACKAGE_INSTALL_DETECT,
+                                "Strict-install staging failed for ${event.packageName}",
+                                throwable
+                            )
+                        }
+                    }
+                }
+
+                eventsToProcess.forEach { event ->
                     val changedPackage = event.packageName
-                    FocusLog.d(FocusEventId.PACKAGE_INSTALL_DETECT, "│ evaluating: ${event.action} pkg=$changedPackage")
                     if (changedPackage == managedVpnPackage) {
-                        FocusLog.i(
-                            FocusEventId.BOOT_REAPPLY,
-                            "│ 🔴 Managed VPN package changed action=${event.action} pkg=$changedPackage"
-                        )
                         shouldEnforce = true
                         trigger = "managed_vpn:${event.action}:$changedPackage"
                         return@forEach
                     }
                     if (alwaysAllowed.contains(changedPackage)) {
-                        FocusLog.d(FocusEventId.PACKAGE_INSTALL_DETECT, "│   → SKIP: always-allowed")
                         return@forEach
                     }
 
                     val shouldBlockForAlwaysBlocked = alwaysBlocked.contains(changedPackage)
                     val suspendable = resolver.filterSuspendable(setOf(changedPackage), allowlist)
-                    FocusLog.d(FocusEventId.PACKAGE_INSTALL_DETECT, "│   alwaysBlocked=$shouldBlockForAlwaysBlocked suspendable=${suspendable.isNotEmpty()}")
                     if (suspendable.isEmpty() && !shouldBlockForAlwaysBlocked) {
-                        FocusLog.d(FocusEventId.PACKAGE_INSTALL_DETECT, "│   → SKIP: not suspendable and not always-blocked")
                         return@forEach
                     }
 
-                    val strictStaged = engine.onNewPackageInstalledDuringStrictSchedule(changedPackage)
-                    FocusLog.d(FocusEventId.PACKAGE_INSTALL_DETECT, "│   strictStaged=$strictStaged")
-                    if (!strictStaged && !shouldBlockForAlwaysBlocked) {
-                        FocusLog.i(
-                            FocusEventId.STRICT_INSTALL_SUSPEND,
-                            "│   → SKIP: no strict action pkg=$changedPackage"
-                        )
-                        return@forEach
+                    if (!shouldBlockForAlwaysBlocked) {
+                        val strictStaged = engine.onNewPackageInstalledDuringStrictSchedule(changedPackage)
+                        if (!strictStaged) return@forEach
                     }
 
                     shouldEnforce = true
                     trigger = "${event.action}:$changedPackage"
-                    FocusLog.d(FocusEventId.PACKAGE_INSTALL_DETECT, "│   → WILL ENFORCE trigger=$trigger")
                 }
 
                 if (shouldEnforce) {
-                    FocusLog.i(FocusEventId.PACKAGE_INSTALL_DETECT, "│ enforcing: trigger=$trigger")
-                    engine.requestApplyNow(reason = "PackageChangeReceiver:$trigger")
+                    val triggerLabel = eventsToProcess.joinToString(",") { "${it.action}:${it.packageName}" }
+                    PolicyApplyOrchestrator.requestApply(
+                        context = context,
+                        reason = "PackageChangeReceiver:$triggerLabel",
+                        onComplete = {
+                            eventsToProcess.forEach { event ->
+                                event.pendingResults.forEach { result -> runCatching { result.finish() } }
+                            }
+                        }
+                    )
                 } else {
-                    FocusLog.d(FocusEventId.PACKAGE_INSTALL_DETECT, "│ no enforcement needed")
+                    eventsToProcess.forEach { event ->
+                        event.pendingResults.forEach { result -> runCatching { result.finish() } }
+                    }
                 }
-                FocusLog.d(FocusEventId.PACKAGE_INSTALL_DETECT, "└── PackageChangeReceiver done")
             } catch (t: Throwable) {
                 FocusLog.e(FocusEventId.STRICT_INSTALL_SUSPEND_FAIL, "Package change handling failed", t)
-            } finally {
-                events.forEach { event ->
-                    event.pendingResults.forEach { result ->
-                        runCatching { result.finish() }
-                    }
+                eventsToProcess.forEach { event ->
+                    event.pendingResults.forEach { result -> runCatching { result.finish() } }
                 }
             }
         }
@@ -132,9 +198,5 @@ class PackageChangeReceiver : BroadcastReceiver() {
         var action: String,
         val pendingResults: MutableList<BroadcastReceiver.PendingResult>
     )
-
-    private companion object {
-        private const val EXECUTOR_KEY = "package-change"
-        private val pendingEvents = linkedMapOf<String, PendingPackageEvent>()
-    }
 }
+

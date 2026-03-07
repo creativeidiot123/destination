@@ -8,6 +8,7 @@ import com.ankit.destination.budgets.BudgetOrchestrator
 import com.ankit.destination.data.AppGroupMap
 import com.ankit.destination.data.AppPolicy
 import com.ankit.destination.data.EmergencyState
+import com.ankit.destination.data.EmergencyStateMerger
 import com.ankit.destination.data.EmergencyTargetType
 import com.ankit.destination.data.FocusDatabase
 import com.ankit.destination.data.GlobalControls
@@ -19,6 +20,7 @@ import com.ankit.destination.schedule.ScheduleDecision
 import com.ankit.destination.schedule.ScheduleEvaluator
 import com.ankit.destination.usage.UsageAccess
 import com.ankit.destination.usage.UsageAccessMonitor
+import com.ankit.destination.usage.UsageWindow
 import com.ankit.destination.vpn.FocusVpnService
 import com.ankit.destination.vpn.VpnStatusStore
 import kotlinx.coroutines.Dispatchers
@@ -823,7 +825,7 @@ class PolicyEngine(context: Context) {
         persistComputedState(orchestrated)
         val external = computeExternalState(orchestrated.nowMs)
         FocusLog.d(FocusEventId.POLICY_STATE_COMPUTED, "â•‘ effectiveMode=${external.effectiveMode} schedLock=${orchestrated.scheduleDecision.shouldLock} strict=${orchestrated.strictActive}")
-        FocusLog.d(FocusEventId.POLICY_STATE_COMPUTED, "â•‘ suspendTargets=${external.suspendTargets.size} schedBlockedGroups=${external.scheduleBlockedGroupIds.size} budgetBlocked=${external.budgetBlockedPackages.size}")
+        FocusLog.d(FocusEventId.POLICY_STATE_COMPUTED, "â•‘ suspendTargets=${external.budgetBlockedPackages.size} schedBlockedGroups=${orchestrated.scheduleDecision.blockedGroupIds.size} budgetBlocked=${external.budgetBlockedPackages.size}")
         val result = FocusLog.timed(FocusEventId.POLICY_APPLY_START, "applyModeInternal") {
             applyModeInternal(
                 targetMode = external.effectiveMode,
@@ -930,7 +932,14 @@ class PolicyEngine(context: Context) {
                 scheduleBlocked = scheduledAppPackages.contains(policy.packageName)
             )
         }
-        val emergencyStates = loaded.emergencyStates.map {
+        val nowMs = now.toInstant().toEpochMilli()
+        val dayKey = UsageWindow.dayKey(now)
+        val mergedEmergencyStates = EmergencyStateMerger.merge(
+            dayKey = dayKey,
+            nowMs = nowMs,
+            rows = loaded.emergencyStates
+        )
+        val emergencyStates = mergedEmergencyStates.map {
             EmergencyStateInput(
                 targetType = runCatching { EmergencyTargetType.valueOf(it.targetType) }
                     .getOrDefault(EmergencyTargetType.GROUP),
@@ -940,7 +949,7 @@ class PolicyEngine(context: Context) {
             )
         }
         val evaluation = EffectivePolicyEvaluator.evaluate(
-            nowMs = now.toInstant().toEpochMilli(),
+            nowMs = nowMs,
             usageInputs = usageSnapshot.usageInputs,
             groupPolicies = groupInputs,
             appPolicies = appInputs,
@@ -949,7 +958,7 @@ class PolicyEngine(context: Context) {
             alwaysAllowedPackages = allowlistPackages
         )
         return OrchestratedState(
-            nowMs = now.toInstant().toEpochMilli(),
+            nowMs = nowMs,
             usageAccessGranted = usageSnapshot.usageAccessGranted,
             usageAccessComplianceState = currentUsageAccessComplianceState(usageSnapshot.usageAccessGranted),
             nextCheckAtMs = usageSnapshot.nextCheckAtMs,

@@ -2,10 +2,9 @@ package com.ankit.destination.usage
 
 import android.app.AppOpsManager
 import android.content.Context
-import com.ankit.destination.enforce.EnforcementExecutor
+import com.ankit.destination.enforce.PolicyApplyOrchestrator
 import com.ankit.destination.policy.FocusEventId
 import com.ankit.destination.policy.FocusLog
-import com.ankit.destination.policy.PolicyEngine
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -16,7 +15,6 @@ data class UsageAccessMonitorState(
 )
 
 object UsageAccessMonitor {
-    private const val EXECUTOR_KEY = "usage-access-monitor"
     private const val POLICY_REFRESH_DEBOUNCE_MS = 1_000L
 
     private val lock = Any()
@@ -87,7 +85,10 @@ object UsageAccessMonitor {
         val previous = _currentState.value
         val nowMs = System.currentTimeMillis()
         if (shouldReuseRecentRefresh(previous.lastCheckAtMs, nowMs, minimumIntervalMs)) {
-            FocusLog.v(FocusEventId.USAGE_ACCESS_CHECK, "refreshNow($reason) REUSED (interval throttle ${nowMs - previous.lastCheckAtMs}ms < ${minimumIntervalMs}ms)")
+            FocusLog.v(
+                FocusEventId.USAGE_ACCESS_CHECK,
+                "refreshNow($reason) REUSED (interval throttle ${nowMs - previous.lastCheckAtMs}ms < ${minimumIntervalMs}ms)"
+            )
             return previous
         }
         val next = UsageAccessMonitorState(
@@ -96,7 +97,10 @@ object UsageAccessMonitor {
         )
         _currentState.value = next
         val changed = previous.lastCheckAtMs > 0L && previous.usageAccessGranted != next.usageAccessGranted
-        FocusLog.d(FocusEventId.USAGE_ACCESS_CHECK, "refreshNow($reason): granted=${next.usageAccessGranted} prev=${previous.usageAccessGranted} changed=$changed")
+        FocusLog.d(
+            FocusEventId.USAGE_ACCESS_CHECK,
+            "refreshNow($reason): granted=${next.usageAccessGranted} prev=${previous.usageAccessGranted} changed=$changed"
+        )
         if (
             requestPolicyRefreshIfChanged &&
             changed
@@ -128,14 +132,10 @@ object UsageAccessMonitor {
         }
 
         FocusLog.i(FocusEventId.USAGE_ACCESS_CHECK, "requestPolicyRefresh($reason) DISPATCHING granted=$usageAccessGranted")
-        EnforcementExecutor.executeLatest(EXECUTOR_KEY) {
-            val engine = PolicyEngine(context)
-            if (!engine.isDeviceOwner()) {
-                FocusLog.d(FocusEventId.USAGE_ACCESS_CHECK, "requestPolicyRefresh: not device owner, skipping")
-                return@executeLatest
-            }
-            engine.requestApplyNow(reason = "usage_access:$reason")
-        }
+        PolicyApplyOrchestrator.requestApply(
+            context = context,
+            reason = "usage_access:$reason"
+        )
     }
 
     internal fun shouldSuppressPolicyRefresh(
@@ -145,8 +145,10 @@ object UsageAccessMonitor {
         nowMs: Long,
         debounceMs: Long
     ): Boolean {
+        val delta = nowMs - lastPolicyRefreshAtMs
+        if (delta < 0L) return false
         return lastPolicyRefreshGranted == nextUsageAccessGranted &&
-            nowMs - lastPolicyRefreshAtMs < debounceMs
+            delta < debounceMs
     }
 
     internal fun shouldReuseRecentRefresh(
@@ -154,8 +156,11 @@ object UsageAccessMonitor {
         nowMs: Long,
         minimumIntervalMs: Long
     ): Boolean {
+        val delta = nowMs - lastCheckAtMs
+        if (delta < 0L) return false
         return minimumIntervalMs > 0L &&
             lastCheckAtMs > 0L &&
-            nowMs - lastCheckAtMs < minimumIntervalMs
+            delta < minimumIntervalMs
     }
 }
+

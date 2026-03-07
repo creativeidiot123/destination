@@ -3,6 +3,7 @@ package com.ankit.destination.ui.dashboard
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ankit.destination.enforce.PolicyApplyOrchestrator
 import com.ankit.destination.policy.PolicyEngine
 import com.ankit.destination.security.AppLockManager
 import com.ankit.destination.usage.UsageAccessMonitor
@@ -106,7 +107,10 @@ class DashboardViewModel(
                     reason = "dashboard_apply_now",
                     requestPolicyRefreshIfChanged = false
                 )
-                policyEngine.requestApplyNow(null, "ui_reapply")
+                PolicyApplyOrchestrator.applyNow(
+                    context = appContext,
+                    reason = "ui_reapply"
+                )
             }
             refresh()
         }

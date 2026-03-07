@@ -4,13 +4,13 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.PersistableBundle
+import com.ankit.destination.enforce.PolicyApplyOrchestrator
 import com.ankit.destination.usage.UsageAccess
 import com.ankit.destination.usage.UsageAccessMonitor
 
 class ProvisioningCoordinator(context: Context) {
     private val appContext = context.applicationContext
     private val facade = DevicePolicyFacade(appContext)
-    private val policyEngine = PolicyEngine(appContext)
     private val store = PolicyStore(appContext)
 
     enum class FinalizationState {
@@ -98,7 +98,10 @@ class ProvisioningCoordinator(context: Context) {
         }
 
         FocusLog.i(FocusEventId.PROVISIONING_FINALIZE_START, "Finalizing provisioning trigger=$trigger")
-        val engineResult = policyEngine.reapplyDesiredMode(reason = "provisioning_finalize")
+        val engineResult = PolicyApplyOrchestrator.applyNowBlocking(
+            context = appContext,
+            reason = "provisioning_finalize"
+        )
         val finalization = if (engineResult.success) {
             FinalizationResult(
                 state = FinalizationState.SUCCESS,
