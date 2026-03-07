@@ -25,9 +25,9 @@ object CapabilityPolicy {
             AdminCapability.REMOVE_APP_FROM_GROUP,
             AdminCapability.REORDER_GROUP_PRIORITY,
             AdminCapability.EDIT_INDIVIDUAL_APP_SETTINGS,
-            AdminCapability.EDIT_UNINSTALL_PROTECTED_LIST,
+            AdminCapability.EDIT_UNINSTALL_PROTECTED_LIST -> true
             AdminCapability.ADD_BLOCKLIST_APP,
-            AdminCapability.ADD_APP_TO_GROUP -> true
+            AdminCapability.ADD_APP_TO_GROUP -> false
         }
     }
 }

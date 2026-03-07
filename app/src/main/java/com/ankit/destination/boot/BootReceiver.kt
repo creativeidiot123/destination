@@ -8,9 +8,9 @@ import android.content.Intent
 import com.ankit.destination.enforce.EnforcementExecutor
 import com.ankit.destination.policy.FocusEventId
 import com.ankit.destination.policy.FocusLog
-import com.ankit.destination.policy.ModeState
 import com.ankit.destination.policy.PolicyEngine
 import com.ankit.destination.schedule.ScheduleEnforcer
+import com.ankit.destination.usage.UsageAccessMonitor
 
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -18,38 +18,53 @@ class BootReceiver : BroadcastReceiver() {
         val attempt = intent.getIntExtra(EXTRA_RETRY_ATTEMPT, 0)
         val pending = goAsync()
 
-        EnforcementExecutor.execute {
+        FocusLog.i(FocusEventId.BOOT_REAPPLY, "┌── BootReceiver: action=$action attempt=$attempt")
+        EnforcementExecutor.executeLatest(
+            key = EXECUTOR_KEY,
+            onDropped = pending::finish
+        ) {
             try {
+                UsageAccessMonitor.refreshNow(
+                    context = context,
+                    reason = "boot:$action",
+                    requestPolicyRefreshIfChanged = true
+                )
                 val engine = PolicyEngine(context)
                 if (!engine.isDeviceOwner()) {
+                    FocusLog.d(FocusEventId.BOOT_REAPPLY, "└── NOT device owner, skipping boot reapply")
                     cancelRetry(context)
-                    return@execute
+                    return@executeLatest
                 }
 
-                FocusLog.i(FocusEventId.BOOT_REAPPLY, "action=$action attempt=$attempt")
+                FocusLog.i(FocusEventId.BOOT_REAPPLY, "│ Applying policy action=$action attempt=$attempt")
                 val includeBudgets = engine.shouldRunBudgetEvaluation()
                 val scheduleResult = ScheduleEnforcer(context).enforceNow(
                     trigger = "BootReceiver:$action",
                     includeBudgets = includeBudgets
                 ).policyResult
+                FocusLog.d(FocusEventId.BOOT_REAPPLY, "│ schedule enforce: success=${scheduleResult.success}")
                 val finalResult = if (!scheduleResult.success) {
+                    FocusLog.d(FocusEventId.BOOT_REAPPLY, "│ schedule failed, reapplying desired mode")
                     engine.reapplyDesiredMode(reason = action)
                 } else {
                     scheduleResult
                 }
 
-                // Fallback: if schedule path fails, still attempt baseline reapply.
-                if (finalResult.success || finalResult.state.mode != ModeState.NUCLEAR) {
+                if (finalResult.success) {
+                    FocusLog.i(FocusEventId.BOOT_REAPPLY, "└── ✅ Boot reapply SUCCESS")
                     cancelRetry(context)
+                } else {
+                    FocusLog.w(FocusEventId.BOOT_REAPPLY, "│ Boot reapply FAILED")
                 }
-                if (!finalResult.success && finalResult.state.mode == ModeState.NUCLEAR && attempt < RETRY_DELAYS_MS.size) {
+                if (!finalResult.success && attempt < RETRY_DELAYS_MS.size) {
+                    FocusLog.w(FocusEventId.BOOT_RETRY, "└── Scheduling retry attempt=${attempt + 1}")
                     scheduleRetry(context, attempt + 1)
                 }
             } catch (t: Throwable) {
                 FocusLog.e(FocusEventId.BOOT_RETRY, "Boot reapply crashed", t)
                 val shouldRetry = runCatching {
                     val engine = PolicyEngine(context)
-                    engine.isDeviceOwner() && engine.getDesiredMode() == ModeState.NUCLEAR
+                    engine.isDeviceOwner()
                 }.getOrDefault(false)
                 if (shouldRetry && attempt < RETRY_DELAYS_MS.size) {
                     scheduleRetry(context, attempt + 1)
@@ -97,6 +112,7 @@ class BootReceiver : BroadcastReceiver() {
         const val ACTION_REAPPLY_RETRY = "com.ankit.destination.ACTION_REAPPLY_RETRY"
         private const val EXTRA_RETRY_ATTEMPT = "retry_attempt"
         private const val RETRY_REQUEST_CODE = 49001
+        private const val EXECUTOR_KEY = "boot-reapply"
         private val RETRY_DELAYS_MS = longArrayOf(5_000L, 30_000L, 120_000L)
     }
 }

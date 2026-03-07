@@ -5,11 +5,15 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import androidx.core.app.NotificationCompat
 import com.ankit.destination.R
+import com.ankit.destination.policy.FocusEventId
+import com.ankit.destination.policy.FocusLog
 import com.ankit.destination.policy.PolicyStore
 import com.ankit.destination.ui.MainActivity
 import java.io.FileInputStream
@@ -20,7 +24,15 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.random.Random
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
 
 class FocusVpnService : VpnService() {
     private var vpnInterface: ParcelFileDescriptor? = null
@@ -38,12 +50,23 @@ class FocusVpnService : VpnService() {
     @Volatile private var domainSnapshotLoadedAtMs: Long = 0L
     @Volatile private var domainSnapshotRefreshAttemptAtMs: Long = 0L
     private val domainSnapshotRefreshInFlight = AtomicBoolean(false)
+    @Volatile private var blockedGroupSnapshot: Set<String> = emptySet()
+    @Volatile private var blockedGroupSnapshotLoadedAtMs: Long = 0L
+    @Volatile private var blockedGroupSnapshotRefreshAttemptAtMs: Long = 0L
+    @Volatile private var lastDnsForwardFailureAtMs: Long = 0L
+    private val blockedGroupSnapshotRefreshInFlight = AtomicBoolean(false)
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val vpnLifecycleLock = Any()
+    private var establishJob: Job? = null
+    @Volatile private var lifecycleGeneration = 0
 
     override fun onCreate() {
         super.onCreate()
         statusStore = VpnStatusStore(this)
         domainPolicyEngine = DomainPolicyEngine(this)
         policyStore = PolicyStore(this)
+        statusStore.setRunning(false)
+        applyBlockedGroupSnapshot(loadBlockedGroupsSnapshot())
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -63,8 +86,9 @@ class FocusVpnService : VpnService() {
     }
 
     override fun onDestroy() {
-        super.onDestroy()
         stopVpn()
+        serviceScope.cancel()
+        super.onDestroy()
     }
 
     override fun onRevoke() {
@@ -75,42 +99,76 @@ class FocusVpnService : VpnService() {
     }
 
     private fun establishIfNeeded() {
-        if (vpnInterface != null && packetThread?.isAlive == true && packetLoopRunning) return
-        cleanupVpnState(closeInterface = true)
-        runCatching {
-            val rules = runBlocking { domainPolicyEngine.loadSnapshot() }
-            domainSnapshot = rules
-            domainSnapshotLoadedAtMs = System.currentTimeMillis()
-            val ruleCount = rules.blockedDomainsGlobal.size +
-                rules.allowedDomainsGlobal.size +
-                rules.blockedDomainsByGroup.values.sumOf { it.size }
-            statusStore.setDomainRuleCount(ruleCount)
+        synchronized(vpnLifecycleLock) {
+            if (vpnInterface != null && packetThread?.isAlive == true && packetLoopRunning) {
+                statusStore.setRunning(true)
+                statusStore.setLastError(null)
+                return
+            }
+            if (establishJob?.isActive == true) return
+            lifecycleGeneration += 1
+            statusStore.setRunning(false)
+            statusStore.setLastError(null)
+            val generation = lifecycleGeneration
+            establishJob = serviceScope.launch { establishVpn(generation) }
+        }
+    }
 
-            val builder = Builder()
-                .setSession("Destination Focus VPN")
-                .setMtu(1500)
-                .addAddress("10.37.0.2", 24)
-                .addRoute(VPN_DNS_ADDRESS, 32)
-                .addDnsServer(VPN_DNS_ADDRESS)
-            val established = builder.establish()
-                ?: throw IllegalStateException("Failed to establish VPN interface")
-            vpnInterface = established
-            startPacketLoop()
+    private suspend fun establishVpn(generation: Int) {
+        val currentJob = currentCoroutineContext()[Job]
+        try {
+            val rules = domainPolicyEngine.loadSnapshot()
+            currentCoroutineContext().ensureActive()
+            applyDomainSnapshot(rules)
+            synchronized(vpnLifecycleLock) {
+                if (generation != lifecycleGeneration) return
+                cleanupVpnStateLocked(closeInterface = true)
+                val builder = Builder()
+                    .setSession("Destination Focus VPN")
+                    .setMtu(1500)
+                    .addAddress("10.37.0.2", 24)
+                    .addRoute(VPN_DNS_ADDRESS, 32)
+                    .addDnsServer(VPN_DNS_ADDRESS)
+                val established = builder.establish()
+                    ?: throw IllegalStateException("Failed to establish VPN interface")
+                vpnInterface = established
+                startPacketLoopLocked(generation)
+            }
             statusStore.setRunning(true)
             statusStore.setLastError(null)
-        }.onFailure {
-            cleanupVpnState(closeInterface = true)
-            statusStore.setRunning(false)
-            statusStore.setLastError(it.message ?: "Unknown VPN error")
+        } catch (_: CancellationException) {
+            // Stop/restart path canceled this startup attempt.
+        } catch (t: Throwable) {
+            synchronized(vpnLifecycleLock) {
+                if (generation == lifecycleGeneration) {
+                    cleanupVpnStateLocked(closeInterface = true)
+                }
+            }
+            if (generation == lifecycleGeneration) {
+                statusStore.setRunning(false)
+                statusStore.setLastError(t.message ?: "Unknown VPN error")
+                FocusLog.e(this, FocusEventId.MANAGED_NETWORK_CHANGE, "VPN establish failed", t)
+            }
+        } finally {
+            synchronized(vpnLifecycleLock) {
+                if (establishJob === currentJob) {
+                    establishJob = null
+                }
+            }
         }
     }
 
     private fun stopVpn() {
-        cleanupVpnState(closeInterface = true)
+        synchronized(vpnLifecycleLock) {
+            lifecycleGeneration += 1
+            establishJob?.cancel()
+            establishJob = null
+            cleanupVpnStateLocked(closeInterface = true)
+        }
         statusStore.setRunning(false)
     }
 
-    private fun cleanupVpnState(closeInterface: Boolean) {
+    private fun cleanupVpnStateLocked(closeInterface: Boolean) {
         packetLoopRunning = false
         val thread = packetThread
         packetThread = null
@@ -126,7 +184,7 @@ class FocusVpnService : VpnService() {
         }
     }
 
-    private fun startPacketLoop() {
+    private fun startPacketLoopLocked(generation: Int) {
         val vpn = vpnInterface ?: return
         if (packetThread?.isAlive == true) return
 
@@ -138,7 +196,8 @@ class FocusVpnService : VpnService() {
             try {
                 while (packetLoopRunning) {
                     val len = input.read(packet)
-                    if (len <= 0) continue
+                    if (len < 0) break
+                    if (len == 0) continue
                     val response = handlePacket(packet, len) ?: continue
                     output.write(response)
                 }
@@ -147,11 +206,19 @@ class FocusVpnService : VpnService() {
             } catch (t: Throwable) {
                 packetLoopRunning = false
                 statusStore.setLastError("VPN packet loop error: ${t.message}")
+                FocusLog.e(this, FocusEventId.MANAGED_NETWORK_CHANGE, "VPN packet loop failed", t)
             } finally {
                 runCatching { input.close() }
                 runCatching { output.close() }
-                if (packetThread === Thread.currentThread()) {
-                    cleanupVpnState(closeInterface = true)
+                val shouldMarkStopped = synchronized(vpnLifecycleLock) {
+                    if (packetThread === Thread.currentThread() && generation == lifecycleGeneration) {
+                        cleanupVpnStateLocked(closeInterface = true)
+                        true
+                    } else {
+                        false
+                    }
+                }
+                if (shouldMarkStopped) {
                     statusStore.setRunning(false)
                 }
             }
@@ -184,7 +251,7 @@ class FocusVpnService : VpnService() {
         val payloadLen = minOf(len - payloadOffset, udpLength - UDP_HEADER_LEN)
         if (payloadLen <= 0) return null
         val dnsQuery = packet.copyOfRange(payloadOffset, payloadOffset + payloadLen)
-        val blockedGroups = policyStore.getBudgetBlockedGroupIds() + policyStore.getScheduleBlockedGroups()
+        val blockedGroups = currentBlockedGroups()
         val domain = parseDnsQuestionDomain(dnsQuery)
         val responsePayload = when {
             domain != null && shouldBlockDomain(domain, blockedGroups) -> {
@@ -212,30 +279,65 @@ class FocusVpnService : VpnService() {
         )
     }
 
+    private fun currentBlockedGroups(): Set<String> {
+        ensureBlockedGroupSnapshotFresh()
+        return blockedGroupSnapshot
+    }
+
     private fun ensureDomainSnapshotFresh() {
         val nowMs = System.currentTimeMillis()
         if (nowMs - domainSnapshotLoadedAtMs < DOMAIN_REFRESH_MS) return
         if (nowMs - domainSnapshotRefreshAttemptAtMs < DOMAIN_REFRESH_RETRY_BACKOFF_MS) return
         if (!domainSnapshotRefreshInFlight.compareAndSet(false, true)) return
         domainSnapshotRefreshAttemptAtMs = nowMs
-        Thread({
+        serviceScope.launch {
             try {
-                val snapshot = runBlocking { domainPolicyEngine.loadSnapshot() }
-                domainSnapshot = snapshot
-                domainSnapshotLoadedAtMs = System.currentTimeMillis()
-                val ruleCount = snapshot.blockedDomainsGlobal.size +
-                    snapshot.allowedDomainsGlobal.size +
-                    snapshot.blockedDomainsByGroup.values.sumOf { it.size }
-                statusStore.setDomainRuleCount(ruleCount)
-            } catch (_: Throwable) {
-                // Keep serving with the previous snapshot.
+                applyDomainSnapshot(domainPolicyEngine.loadSnapshot())
+            } catch (t: Throwable) {
+                FocusLog.w(this@FocusVpnService, FocusEventId.MANAGED_NETWORK_CHANGE, "VPN domain snapshot refresh failed: ${t.message}")
             } finally {
                 domainSnapshotRefreshInFlight.set(false)
             }
-        }, "focus-vpn-snapshot-refresh").apply {
-            isDaemon = true
-            start()
         }
+    }
+
+    private fun ensureBlockedGroupSnapshotFresh() {
+        val nowMs = System.currentTimeMillis()
+        if (nowMs - blockedGroupSnapshotLoadedAtMs < BLOCKED_GROUP_REFRESH_MS) return
+        if (nowMs - blockedGroupSnapshotRefreshAttemptAtMs < BLOCKED_GROUP_REFRESH_RETRY_BACKOFF_MS) return
+        if (!blockedGroupSnapshotRefreshInFlight.compareAndSet(false, true)) return
+        blockedGroupSnapshotRefreshAttemptAtMs = nowMs
+        serviceScope.launch {
+            try {
+                applyBlockedGroupSnapshot(loadBlockedGroupsSnapshot())
+            } catch (t: Throwable) {
+                FocusLog.w(
+                    this@FocusVpnService,
+                    FocusEventId.MANAGED_NETWORK_CHANGE,
+                    "VPN blocked-group snapshot refresh failed: ${t.message}"
+                )
+            } finally {
+                blockedGroupSnapshotRefreshInFlight.set(false)
+            }
+        }
+    }
+
+    private fun applyDomainSnapshot(snapshot: DomainPolicySnapshot) {
+        domainSnapshot = snapshot
+        domainSnapshotLoadedAtMs = System.currentTimeMillis()
+        val ruleCount = snapshot.blockedDomainsGlobal.size +
+            snapshot.allowedDomainsGlobal.size +
+            snapshot.blockedDomainsByGroup.values.sumOf { it.size }
+        statusStore.setDomainRuleCount(ruleCount)
+    }
+
+    private fun loadBlockedGroupsSnapshot(): Set<String> {
+        return policyStore.getBudgetBlockedGroupIds() + policyStore.getScheduleBlockedGroups()
+    }
+
+    private fun applyBlockedGroupSnapshot(snapshot: Set<String>) {
+        blockedGroupSnapshot = snapshot
+        blockedGroupSnapshotLoadedAtMs = System.currentTimeMillis()
     }
 
     private fun parseDnsQuestionDomain(query: ByteArray): String? {
@@ -258,6 +360,7 @@ class FocusVpnService : VpnService() {
 
     private fun forwardDnsQuery(query: ByteArray): ByteArray? {
         val upstreams = listOf("1.1.1.1", "8.8.8.8")
+        var lastError: String? = null
         for (ip in upstreams) {
             try {
                 DatagramSocket().use { socket ->
@@ -273,9 +376,20 @@ class FocusVpnService : VpnService() {
                     socket.receive(responsePacket)
                     return responseBuffer.copyOf(responsePacket.length)
                 }
-            } catch (_: Exception) {
-                // Try next upstream.
+            } catch (t: SecurityException) {
+                lastError = "$ip security failure: ${t.message}"
+            } catch (t: IOException) {
+                lastError = "$ip io failure: ${t.message}"
             }
+        }
+        val nowMs = System.currentTimeMillis()
+        if (!lastError.isNullOrBlank() && nowMs - lastDnsForwardFailureAtMs >= DNS_FORWARD_FAILURE_LOG_THROTTLE_MS) {
+            lastDnsForwardFailureAtMs = nowMs
+            FocusLog.w(
+                this,
+                FocusEventId.MANAGED_NETWORK_CHANGE,
+                "VPN DNS forward failed: $lastError"
+            )
         }
         return null
     }
@@ -441,12 +555,17 @@ class FocusVpnService : VpnService() {
         private const val DNS_RCODE_NXDOMAIN = 3
         private const val DOMAIN_REFRESH_MS = 30_000L
         private const val DOMAIN_REFRESH_RETRY_BACKOFF_MS = 5_000L
+        private const val BLOCKED_GROUP_REFRESH_MS = 1_000L
+        private const val BLOCKED_GROUP_REFRESH_RETRY_BACKOFF_MS = 250L
+        private const val DNS_FORWARD_FAILURE_LOG_THROTTLE_MS = 30_000L
         private const val VPN_DNS_ADDRESS = "10.37.0.1"
         private val VPN_DNS_ADDRESS_BYTES: ByteArray by lazy {
             InetAddress.getByName(VPN_DNS_ADDRESS).address
         }
 
         fun start(context: Context) {
+            val appContext = context.applicationContext
+            VpnStatusStore(appContext).setRunning(false)
             val intent = Intent(context, FocusVpnService::class.java).setAction(ACTION_START)
             runCatching {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -455,25 +574,33 @@ class FocusVpnService : VpnService() {
                     context.startService(intent)
                 }
             }.onFailure {
-                VpnStatusStore(context).setLastError("Failed to start VPN: ${it.message}")
+                VpnStatusStore(appContext).setRunning(false)
+                VpnStatusStore(appContext).setLastError("Failed to start VPN: ${it.message}")
             }
         }
 
         fun stop(context: Context) {
-            val intent = Intent(context, FocusVpnService::class.java).setAction(ACTION_STOP)
+            val appContext = context.applicationContext
             runCatching {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(intent)
-                } else {
-                    context.startService(intent)
-                }
+                context.stopService(Intent(context, FocusVpnService::class.java))
+                VpnStatusStore(appContext).setRunning(false)
             }.onFailure {
-                VpnStatusStore(context).setLastError("Failed to stop VPN: ${it.message}")
+                VpnStatusStore(appContext).setRunning(false)
+                VpnStatusStore(appContext).setLastError("Failed to stop VPN: ${it.message}")
             }
         }
 
         fun isPrepared(context: Context): Boolean = prepare(context) == null
 
-        fun isRunning(context: Context): Boolean = VpnStatusStore(context).isRunning()
+        fun isRunning(context: Context): Boolean {
+            val appContext = context.applicationContext
+            val markedRunning = VpnStatusStore(appContext).isRunning()
+            if (!markedRunning) return false
+            val connectivityManager = appContext.getSystemService(ConnectivityManager::class.java)
+                ?: return markedRunning
+            val activeNetwork = connectivityManager.activeNetwork ?: return false
+            val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return false
+            return capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+        }
     }
 }

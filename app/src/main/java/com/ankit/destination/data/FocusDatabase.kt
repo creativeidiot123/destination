@@ -11,19 +11,19 @@ import androidx.sqlite.db.SupportSQLiteDatabase
     entities = [
         ScheduleBlock::class,
         ScheduleBlockGroup::class,
-        AppLimit::class,
+        AppPolicy::class,
         GroupLimit::class,
         AppGroupMap::class,
         UsageSnapshot::class,
         GroupEmergencyConfig::class,
-        GroupEmergencyState::class,
+        EmergencyState::class,
         DomainRule::class,
         GlobalControls::class,
         AlwaysAllowedApp::class,
         AlwaysBlockedApp::class,
         UninstallProtectedApp::class
     ],
-    version = 8,
+    version = 12,
     exportSchema = false
 )
 abstract class FocusDatabase : RoomDatabase() {
@@ -53,7 +53,11 @@ abstract class FocusDatabase : RoomDatabase() {
                 MIGRATION_4_5,
                 MIGRATION_5_6,
                 MIGRATION_6_7,
-                MIGRATION_7_8
+                MIGRATION_7_8,
+                MIGRATION_8_9,
+                MIGRATION_9_10,
+                MIGRATION_10_11,
+                MIGRATION_11_12
             )
                 .build()
         }
@@ -236,6 +240,184 @@ abstract class FocusDatabase : RoomDatabase() {
                         PRIMARY KEY(`packageName`)
                     )
                     """.trimIndent()
+                )
+            }
+        }
+
+        private val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `app_group_map_new` (
+                        `packageName` TEXT NOT NULL,
+                        `groupId` TEXT NOT NULL,
+                        PRIMARY KEY(`packageName`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    INSERT OR REPLACE INTO `app_group_map_new` (`packageName`, `groupId`)
+                    SELECT pkg.`normalizedPackageName`,
+                        (
+                            SELECT TRIM(m2.`groupId`)
+                            FROM `app_group_map` m2
+                            LEFT JOIN `group_limits` g2
+                                ON TRIM(m2.`groupId`) = TRIM(g2.`groupId`)
+                            WHERE TRIM(m2.`packageName`) = pkg.`normalizedPackageName`
+                                AND TRIM(m2.`packageName`) <> ''
+                                AND TRIM(m2.`groupId`) <> ''
+                            ORDER BY COALESCE(g2.`priorityIndex`, 1000) ASC, TRIM(m2.`groupId`) ASC
+                            LIMIT 1
+                        )
+                    FROM (
+                        SELECT DISTINCT TRIM(`packageName`) AS `normalizedPackageName`
+                        FROM `app_group_map`
+                        WHERE TRIM(`packageName`) <> '' AND TRIM(`groupId`) <> ''
+                    ) pkg
+                    """.trimIndent()
+                )
+                db.execSQL("DROP TABLE `app_group_map`")
+                db.execSQL("ALTER TABLE `app_group_map_new` RENAME TO `app_group_map`")
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_app_group_map_groupId` ON `app_group_map` (`groupId`)"
+                )
+            }
+        }
+
+        private val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `app_policy` (
+                        `packageName` TEXT NOT NULL,
+                        `dailyLimitMs` INTEGER NOT NULL,
+                        `hourlyLimitMs` INTEGER NOT NULL,
+                        `opensPerDay` INTEGER NOT NULL,
+                        `enabled` INTEGER NOT NULL,
+                        `emergencyEnabled` INTEGER NOT NULL,
+                        `unlocksPerDay` INTEGER NOT NULL,
+                        `minutesPerUnlock` INTEGER NOT NULL,
+                        PRIMARY KEY(`packageName`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    INSERT OR REPLACE INTO `app_policy`
+                    (`packageName`, `dailyLimitMs`, `hourlyLimitMs`, `opensPerDay`, `enabled`, `emergencyEnabled`, `unlocksPerDay`, `minutesPerUnlock`)
+                    SELECT `packageName`,
+                        `dailyLimitMs`,
+                        9223372036854775807,
+                        2147483647,
+                        `enabled`,
+                        0,
+                        0,
+                        0
+                    FROM `app_limits`
+                    """.trimIndent()
+                )
+                db.execSQL("DROP TABLE IF EXISTS `app_limits`")
+                db.execSQL(
+                    "ALTER TABLE `group_limits` ADD COLUMN `strictEnabled` INTEGER NOT NULL DEFAULT 0"
+                )
+                db.execSQL(
+                    """
+                    UPDATE `group_limits`
+                    SET `strictEnabled` = 1
+                    WHERE TRIM(`groupId`) IN (
+                        SELECT DISTINCT TRIM(sbg.`groupId`)
+                        FROM `schedule_block_groups` sbg
+                        INNER JOIN `schedule_blocks` sb
+                            ON sb.`id` = sbg.`blockId`
+                        WHERE sb.`strict` = 1
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("ALTER TABLE `global_controls` ADD COLUMN `privateDnsMode` TEXT NOT NULL DEFAULT 'OPPORTUNISTIC'")
+                db.execSQL("ALTER TABLE `global_controls` ADD COLUMN `privateDnsHost` TEXT")
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `emergency_state` (
+                        `dayKey` TEXT NOT NULL,
+                        `targetType` TEXT NOT NULL,
+                        `targetId` TEXT NOT NULL,
+                        `unlocksUsedToday` INTEGER NOT NULL,
+                        `activeUntilEpochMs` INTEGER,
+                        PRIMARY KEY(`dayKey`, `targetType`, `targetId`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    INSERT OR REPLACE INTO `emergency_state`
+                    (`dayKey`, `targetType`, `targetId`, `unlocksUsedToday`, `activeUntilEpochMs`)
+                    SELECT `dayKey`, 'GROUP', `groupId`, `unlocksUsedToday`, `activeUntilEpochMs`
+                    FROM `group_emergency_state`
+                    """.trimIndent()
+                )
+                db.execSQL("DROP TABLE IF EXISTS `group_emergency_state`")
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `app_group_map_new` (
+                        `packageName` TEXT NOT NULL,
+                        `groupId` TEXT NOT NULL,
+                        PRIMARY KEY(`packageName`, `groupId`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    INSERT OR REPLACE INTO `app_group_map_new` (`packageName`, `groupId`)
+                    SELECT DISTINCT TRIM(`packageName`), TRIM(`groupId`)
+                    FROM `app_group_map`
+                    WHERE TRIM(`packageName`) <> '' AND TRIM(`groupId`) <> ''
+                    """.trimIndent()
+                )
+                db.execSQL("DROP TABLE `app_group_map`")
+                db.execSQL("ALTER TABLE `app_group_map_new` RENAME TO `app_group_map`")
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_app_group_map_groupId` ON `app_group_map` (`groupId`)"
+                )
+            }
+        }
+
+        private val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `global_controls` ADD COLUMN `managedNetworkMode` TEXT NOT NULL DEFAULT 'UNMANAGED'"
+                )
+                db.execSQL("ALTER TABLE `global_controls` ADD COLUMN `managedVpnPackage` TEXT")
+                db.execSQL(
+                    "ALTER TABLE `global_controls` ADD COLUMN `managedVpnLockdown` INTEGER NOT NULL DEFAULT 1"
+                )
+                db.execSQL(
+                    """
+                    UPDATE `global_controls`
+                    SET `managedNetworkMode` = CASE
+                        WHEN `lockVpnDns` = 1 THEN 'FORCED_VPN'
+                        WHEN TRIM(COALESCE(`privateDnsHost`, '')) <> ''
+                            AND `privateDnsMode` = 'PROVIDER_HOSTNAME' THEN 'FORCED_PRIVATE_DNS'
+                        ELSE 'UNMANAGED'
+                    END,
+                    `managedVpnPackage` = CASE
+                        WHEN `lockVpnDns` = 1 THEN 'com.ankit.destination'
+                        ELSE `managedVpnPackage`
+                    END,
+                    `managedVpnLockdown` = CASE
+                        WHEN `lockVpnDns` = 1 THEN 1
+                        ELSE `managedVpnLockdown`
+                    END
+                    WHERE `id` = 1
+                    """.trimIndent()
+                )
+            }
+        }
+
+        private val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `global_controls` ADD COLUMN `disableSafeMode` INTEGER NOT NULL DEFAULT 0"
                 )
             }
         }

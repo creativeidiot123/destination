@@ -1,4 +1,4 @@
-﻿package com.ankit.destination.policy
+package com.ankit.destination.policy
 
 import android.content.Context
 
@@ -19,21 +19,21 @@ class PolicyStore(context: Context) {
 
     fun getDesiredMode(): ModeState {
         val raw = prefs.getString(KEY_MODE, ModeState.NORMAL.name) ?: ModeState.NORMAL.name
-        return runCatching { ModeState.valueOf(raw) }.getOrDefault(ModeState.NORMAL)
+        return normalizeSupportedMode(raw)
     }
 
     fun setDesiredMode(mode: ModeState) {
-        prefs.edit().putString(KEY_MODE, mode.name).apply()
+        prefs.edit().putString(KEY_MODE, normalizeSupportedMode(mode.name).name).apply()
     }
 
     fun getManualMode(): ModeState {
         val fallback = getDesiredMode().name
         val raw = prefs.getString(KEY_MANUAL_MODE, fallback) ?: fallback
-        return runCatching { ModeState.valueOf(raw) }.getOrDefault(ModeState.NORMAL)
+        return normalizeSupportedMode(raw)
     }
 
     fun setManualMode(mode: ModeState) {
-        prefs.edit().putString(KEY_MANUAL_MODE, mode.name).apply()
+        prefs.edit().putString(KEY_MANUAL_MODE, normalizeSupportedMode(mode.name).name).apply()
     }
 
     fun isScheduleLockComputed(): Boolean = prefs.getBoolean(KEY_SCHEDULE_LOCK_COMPUTED, false)
@@ -143,6 +143,42 @@ class PolicyStore(context: Context) {
             .apply()
     }
 
+    fun setComputedPolicyState(
+        scheduleLockComputed: Boolean,
+        scheduleStrictComputed: Boolean,
+        scheduleBlockedGroups: Set<String>,
+        scheduleBlockedPackages: Set<String>,
+        scheduleLockReason: String?,
+        scheduleNextTransitionAtMs: Long?,
+        budgetBlockedPackages: Set<String>,
+        budgetBlockedGroupIds: Set<String>,
+        budgetReason: String?,
+        budgetUsageAccessGranted: Boolean,
+        budgetNextCheckAtMs: Long?,
+        primaryReasonByPackage: Map<String, String>,
+        clearStrictInstallSuspendedPackages: Boolean
+    ) {
+        prefs.edit()
+            .putBoolean(KEY_SCHEDULE_LOCK_COMPUTED, scheduleLockComputed)
+            .putBoolean(KEY_SCHEDULE_STRICT_COMPUTED, scheduleStrictComputed)
+            .putStringSet(KEY_SCHEDULE_BLOCKED_GROUPS, scheduleBlockedGroups)
+            .putStringSet(KEY_SCHEDULE_BLOCKED_PACKAGES, scheduleBlockedPackages)
+            .putString(KEY_SCHEDULE_LOCK_REASON, scheduleLockReason)
+            .putLong(KEY_SCHEDULE_NEXT_TRANSITION_AT, scheduleNextTransitionAtMs ?: -1L)
+            .putStringSet(KEY_BUDGET_BLOCKED, budgetBlockedPackages)
+            .putStringSet(KEY_BUDGET_BLOCKED_GROUPS, budgetBlockedGroupIds)
+            .putString(KEY_BUDGET_REASON, budgetReason)
+            .putBoolean(KEY_BUDGET_USAGE_ACCESS_GRANTED, budgetUsageAccessGranted)
+            .putLong(KEY_BUDGET_NEXT_CHECK_AT, budgetNextCheckAtMs ?: -1L)
+            .putString(KEY_PRIMARY_REASON_BY_PACKAGE, encodeMap(primaryReasonByPackage))
+            .apply {
+                if (clearStrictInstallSuspendedPackages) {
+                    putStringSet(KEY_STRICT_INSTALL_SUSPENDED, emptySet())
+                }
+            }
+            .apply()
+    }
+
     fun getTouchGrassBreakUntilMs(): Long? {
         val value = prefs.getLong(KEY_TOUCH_GRASS_BREAK_UNTIL_MS, -1L)
         return if (value > 0L) value else null
@@ -154,41 +190,55 @@ class PolicyStore(context: Context) {
     }
 
     fun setTouchGrassBreakUntilMs(untilMs: Long?) {
-        prefs.edit().putLong(KEY_TOUCH_GRASS_BREAK_UNTIL_MS, untilMs ?: -1L).apply()
+        synchronized(TOUCH_GRASS_LOCK) {
+            prefs.edit().putLong(KEY_TOUCH_GRASS_BREAK_UNTIL_MS, untilMs ?: -1L).apply()
+        }
     }
 
     fun getUnlockCountDay(): String? = prefs.getString(KEY_UNLOCK_COUNT_DAY, null)
 
-    fun getUnlockCountToday(): Int = prefs.getInt(KEY_UNLOCK_COUNT_TODAY, 0)
+    fun getUnlockCountToday(): Int = prefs.getInt(KEY_UNLOCK_COUNT_TODAY, 0).coerceAtLeast(0)
 
     fun incrementUnlockCount(dayKey: String): Int {
-        val currentDay = getUnlockCountDay()
-        val nextCount = if (currentDay == dayKey) {
-            getUnlockCountToday() + 1
-        } else {
-            1
+        synchronized(TOUCH_GRASS_LOCK) {
+            val currentDay = getUnlockCountDay()
+            val nextCount = if (currentDay == dayKey) {
+                getUnlockCountToday() + 1
+            } else {
+                1
+            }
+            prefs.edit()
+                .putString(KEY_UNLOCK_COUNT_DAY, dayKey)
+                .putInt(KEY_UNLOCK_COUNT_TODAY, nextCount)
+                .apply()
+            return nextCount
         }
-        prefs.edit()
-            .putString(KEY_UNLOCK_COUNT_DAY, dayKey)
-            .putInt(KEY_UNLOCK_COUNT_TODAY, nextCount)
-            .apply()
-        return nextCount
     }
 
     fun getTouchGrassThreshold(): Int {
-        return prefs.getInt(KEY_TOUCH_GRASS_THRESHOLD, FocusConfig.defaultTouchGrassUnlockThreshold)
+        return prefs.getInt(
+            KEY_TOUCH_GRASS_THRESHOLD,
+            FocusConfig.defaultTouchGrassUnlockThreshold
+        ).coerceAtLeast(1)
     }
 
     fun setTouchGrassThreshold(value: Int) {
-        prefs.edit().putInt(KEY_TOUCH_GRASS_THRESHOLD, value.coerceAtLeast(1)).apply()
+        synchronized(TOUCH_GRASS_LOCK) {
+            prefs.edit().putInt(KEY_TOUCH_GRASS_THRESHOLD, value.coerceAtLeast(1)).apply()
+        }
     }
 
     fun getTouchGrassBreakMinutes(): Int {
-        return prefs.getInt(KEY_TOUCH_GRASS_BREAK_MINUTES, FocusConfig.defaultTouchGrassBreakMinutes)
+        return prefs.getInt(
+            KEY_TOUCH_GRASS_BREAK_MINUTES,
+            FocusConfig.defaultTouchGrassBreakMinutes
+        ).coerceAtLeast(1)
     }
 
     fun setTouchGrassBreakMinutes(value: Int) {
-        prefs.edit().putInt(KEY_TOUCH_GRASS_BREAK_MINUTES, value.coerceAtLeast(1)).apply()
+        synchronized(TOUCH_GRASS_LOCK) {
+            prefs.edit().putInt(KEY_TOUCH_GRASS_BREAK_MINUTES, value.coerceAtLeast(1)).apply()
+        }
     }
 
     fun getEmergencyApps(): Set<String> = prefs.getStringSet(KEY_EMERGENCY, emptySet())?.toSet() ?: emptySet()
@@ -230,29 +280,22 @@ class PolicyStore(context: Context) {
         state: PolicyState,
         applyResult: ApplyResult,
         verification: PolicyVerificationResult,
-        errorMessage: String?
+        errorMessage: String?,
+        controllerPackageName: String
     ) {
-        val toUnsuspend = state.previouslySuspended - state.suspendTargets
-        val toSuspend = state.suspendTargets - state.previouslySuspended
-        val successfulUnsuspended = toUnsuspend - applyResult.failedToUnsuspend
-        val successfulSuspended = toSuspend - applyResult.failedToSuspend
-        val actualSuspended = (state.previouslySuspended - successfulUnsuspended) + successfulSuspended
-        val desiredUninstallProtected = buildSet {
-            addAll(state.uninstallProtectedPackages)
-            if (state.blockSelfUninstall) {
-                state.allowlistReasons.entries
-                    .firstOrNull { it.value == "controller app" }
-                    ?.key
-                    ?.let(::add)
-            }
-        }
-        val toProtectUninstall = desiredUninstallProtected - state.previouslyUninstallProtectedPackages
-        val toUnprotectUninstall = state.previouslyUninstallProtectedPackages - desiredUninstallProtected
-        val successfulProtectedUninstall = toProtectUninstall - applyResult.failedToProtectUninstall
-        val successfulUnprotectedUninstall = toUnprotectUninstall - applyResult.failedToUnprotectUninstall
-        val actualUninstallProtected =
-            (state.previouslyUninstallProtectedPackages - successfulUnprotectedUninstall) +
-                successfulProtectedUninstall
+        val actualSuspended = reconcileTrackedPackages(
+            previousPackages = state.previouslySuspended,
+            targetPackages = state.suspendTargets,
+            failedAdds = applyResult.failedToSuspend,
+            failedRemovals = applyResult.failedToUnsuspend
+        )
+        val desiredUninstallProtected = desiredUninstallProtectedPackages(state, controllerPackageName)
+        val actualUninstallProtected = reconcileTrackedPackages(
+            previousPackages = state.previouslyUninstallProtectedPackages,
+            targetPackages = desiredUninstallProtected,
+            failedAdds = applyResult.failedToProtectUninstall,
+            failedRemovals = applyResult.failedToUnprotectUninstall
+        )
         prefs.edit()
             .putLong(KEY_LAST_APPLIED_AT, System.currentTimeMillis())
             .putBoolean(KEY_LAST_VERIFY_PASSED, verification.passed)
@@ -342,6 +385,16 @@ class PolicyStore(context: Context) {
         return prefs.getString(KEY_PROVISIONING_FINALIZATION_STATE, null)
     }
 
+    fun isProvisioningFinalizedSuccessfully(): Boolean {
+        return getProvisioningFinalizationState() == ProvisioningCoordinator.FinalizationState.SUCCESS.name
+    }
+
+    fun hasSuccessfulPolicyApply(): Boolean {
+        return getLastAppliedAtMs() > 0L && getLastVerifyPassed()
+    }
+
+    fun hasAnyPriorApply(): Boolean = getLastAppliedAtMs() > 0L
+
     fun getProvisioningFinalizationMessage(): String? {
         return prefs.getString(KEY_PROVISIONING_FINALIZATION_MESSAGE, null)
     }
@@ -351,13 +404,26 @@ class PolicyStore(context: Context) {
         return if (value > 0L) value else null
     }
 
+    fun resetForFreshStart() {
+        prefs.edit().clear().apply()
+    }
+
     private fun encodeMap(values: Map<String, String>): String {
         return values.entries.joinToString(separator = "\n") { "${it.key}=${it.value}" }
+    }
+
+    private fun normalizeSupportedMode(raw: String): ModeState {
+        val parsed = runCatching { ModeState.valueOf(raw) }.getOrDefault(ModeState.NORMAL)
+        return when (parsed) {
+            ModeState.NORMAL -> ModeState.NORMAL
+            ModeState.NUCLEAR -> ModeState.NORMAL
+        }
     }
 
     companion object {
         @Volatile
         private var didAttemptMigration: Boolean = false
+        private val TOUCH_GRASS_LOCK = Any()
 
         private const val PREFS_NAME = "focus_policy_store"
         private const val KEY_MODE = "desired_mode"
@@ -402,8 +468,33 @@ class PolicyStore(context: Context) {
         private const val KEY_PROVISIONING_FINALIZATION_STATE = "provisioning_finalization_state"
         private const val KEY_PROVISIONING_FINALIZATION_MESSAGE = "provisioning_finalization_message"
         private const val KEY_PROVISIONING_FINALIZATION_AT = "provisioning_finalization_at"
+
+        internal fun desiredUninstallProtectedPackages(
+            state: PolicyState,
+            controllerPackageName: String
+        ): Set<String> = buildSet {
+            addAll(state.uninstallProtectedPackages)
+            if (state.blockSelfUninstall) {
+                add(controllerPackageName)
+            }
+        }
+
+        internal fun reconcileTrackedPackages(
+            previousPackages: Set<String>,
+            targetPackages: Set<String>,
+            failedAdds: Set<String>,
+            failedRemovals: Set<String>
+        ): Set<String> {
+            val toRemove = previousPackages - targetPackages
+            val toAdd = targetPackages - previousPackages
+            val successfulRemovals = toRemove - failedRemovals
+            val successfulAdds = toAdd - failedAdds
+            return (previousPackages - successfulRemovals) + successfulAdds
+        }
     }
 }
+
+
 
 
 

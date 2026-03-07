@@ -1,4 +1,4 @@
-package com.ankit.destination.schedule
+package com.ankit.destination.boot
 
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -6,11 +6,13 @@ import android.content.Intent
 import com.ankit.destination.enforce.EnforcementExecutor
 import com.ankit.destination.policy.FocusEventId
 import com.ankit.destination.policy.FocusLog
+import com.ankit.destination.policy.PolicyEngine
+import com.ankit.destination.schedule.ScheduleEnforcer
 import com.ankit.destination.usage.UsageAccessMonitor
 
-class ScheduleEventReceiver : BroadcastReceiver() {
+class UserUnlockedReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
-        val trigger = intent?.action ?: "ScheduleEvent"
+        val trigger = intent?.action ?: Intent.ACTION_USER_UNLOCKED
         val pending = goAsync()
         EnforcementExecutor.executeLatest(
             key = EXECUTOR_KEY,
@@ -19,12 +21,19 @@ class ScheduleEventReceiver : BroadcastReceiver() {
             try {
                 UsageAccessMonitor.refreshNow(
                     context = context,
-                    reason = "schedule_event:$trigger",
+                    reason = "user_unlocked",
                     requestPolicyRefreshIfChanged = true
                 )
-                ScheduleEnforcer(context).enforceNow(trigger)
+                val engine = PolicyEngine(context)
+                if (!engine.isDeviceOwner()) {
+                    return@executeLatest
+                }
+                ScheduleEnforcer(context).enforceNow(
+                    trigger = trigger,
+                    includeBudgets = engine.shouldRunBudgetEvaluation()
+                )
             } catch (t: Throwable) {
-                FocusLog.e(FocusEventId.SCHEDULE_ENFORCE_FAIL, "Schedule event handling failed trigger=$trigger", t)
+                FocusLog.e(FocusEventId.BOOT_RETRY, "User unlock reapply failed", t)
             } finally {
                 pending.finish()
             }
@@ -32,6 +41,6 @@ class ScheduleEventReceiver : BroadcastReceiver() {
     }
 
     private companion object {
-        private const val EXECUTOR_KEY = "schedule-refresh"
+        private const val EXECUTOR_KEY = "user-unlocked-reapply"
     }
 }

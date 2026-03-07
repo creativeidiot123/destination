@@ -2,38 +2,35 @@ package com.ankit.destination.budgets
 
 import android.app.usage.UsageStatsManager
 import android.content.Context
-import com.ankit.destination.data.GroupEmergencyState
+import com.ankit.destination.data.EmergencyState
+import com.ankit.destination.data.EmergencyTargetType
 import com.ankit.destination.data.FocusDatabase
+import com.ankit.destination.policy.EmergencyConfigInput
 import com.ankit.destination.policy.FocusEventId
 import com.ankit.destination.policy.FocusLog
-import com.ankit.destination.usage.AppGroupRule
-import com.ankit.destination.usage.AppLimitRule
-import com.ankit.destination.usage.GroupLimitRule
+import com.ankit.destination.policy.UsageInputs
 import com.ankit.destination.usage.UsageAccess
-import com.ankit.destination.usage.UsageBudgetEvaluator
+import com.ankit.destination.usage.UsageAggregator
 import com.ankit.destination.usage.UsageReader
 import com.ankit.destination.usage.UsageWindow
+import androidx.room.withTransaction
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.text.DateFormat
-import java.util.Date
 import java.time.ZonedDateTime
+import java.util.Date
+import kotlin.math.max
 
-data class BudgetEnforceResult(
-    val blockedPackages: Set<String>,
-    val blockedGroupIds: Set<String>,
-    val reason: String,
-    val reasons: List<String>,
+data class UsageSnapshotResult(
+    val usageInputs: UsageInputs,
     val usageAccessGranted: Boolean,
-    val nextCheckAtMs: Long?,
-    val emergencyDailyBoostMsByGroup: Map<String, Long>,
-    val emergencyActiveUntilByGroup: Map<String, Long>
+    val nextCheckAtMs: Long?
 )
 
 data class EmergencyUnlockResult(
     val success: Boolean,
     val message: String,
-    val state: GroupEmergencyState?
+    val state: EmergencyState?
 )
 
 class BudgetOrchestrator(context: Context) {
@@ -42,172 +39,172 @@ class BudgetOrchestrator(context: Context) {
     private val usageReader by lazy { UsageReader(appContext) }
     private val usageStatsManager by lazy { appContext.getSystemService(UsageStatsManager::class.java) }
 
-    suspend fun evaluateNow(
-        now: ZonedDateTime = ZonedDateTime.now(),
-        emergencyAllowlist: Set<String>
-    ): BudgetEnforceResult = withContext(Dispatchers.IO) {
-        val nowMs = now.toInstant().toEpochMilli()
-        val dayKey = UsageWindow.dayKey(now)
+    suspend fun readUsageSnapshot(now: ZonedDateTime = ZonedDateTime.now()): UsageSnapshotResult = withContext(Dispatchers.IO) {
+        FocusLog.d(FocusEventId.BUDGET_SNAPSHOT, "┌── readUsageSnapshot()")
         val boundaryCheckAtMs = minOf(
             UsageWindow.nextHourStartMs(now),
             UsageWindow.nextDayStartMs(now)
         )
-        if (!UsageAccess.hasUsageAccess(appContext)) {
-            FocusLog.w(FocusEventId.BUDGET_EVAL, "Usage access missing; budget evaluation skipped")
-            return@withContext BudgetEnforceResult(
-                blockedPackages = emptySet(),
-                blockedGroupIds = emptySet(),
-                reason = "Usage access not granted",
-                reasons = listOf("Usage access not granted"),
+        if (!UsageAccess.hasUsageAccess(appContext) || usageStatsManager == null) {
+            FocusLog.w(FocusEventId.BUDGET_SNAPSHOT, "└── NO usage access — returning empty")
+            return@withContext UsageSnapshotResult(
+                usageInputs = UsageInputs(emptyMap(), emptyMap(), emptyMap()),
                 usageAccessGranted = false,
-                nextCheckAtMs = boundaryCheckAtMs,
-                emergencyDailyBoostMsByGroup = emptyMap(),
-                emergencyActiveUntilByGroup = emptyMap()
-            )
-        }
-        if (usageStatsManager == null) {
-            FocusLog.w(FocusEventId.BUDGET_EVAL, "UsageStatsManager unavailable")
-            return@withContext BudgetEnforceResult(
-                blockedPackages = emptySet(),
-                blockedGroupIds = emptySet(),
-                reason = "Usage stats unavailable",
-                reasons = listOf("Usage stats unavailable"),
-                usageAccessGranted = false,
-                nextCheckAtMs = boundaryCheckAtMs,
-                emergencyDailyBoostMsByGroup = emptyMap(),
-                emergencyActiveUntilByGroup = emptyMap()
+                nextCheckAtMs = boundaryCheckAtMs
             )
         }
 
-        val budgetDao = db.budgetDao()
-        budgetDao.clearEmergencyStateBefore(dayKey)
-        val appLimits = budgetDao.getEnabledAppLimits()
-        val groupLimits = budgetDao.getEnabledGroupLimits()
-        val mappings = budgetDao.getAllMappings()
-        val emergencyConfigs = budgetDao.getAllGroupEmergencyConfigs().associateBy { it.groupId }
-        val emergencyStates = budgetDao.getGroupEmergencyStatesForDay(dayKey).associateBy { it.groupId }
-
-        val emergencyBoostMsByGroup = mutableMapOf<String, Long>()
-        val emergencyUntilByGroup = mutableMapOf<String, Long>()
-        emergencyConfigs.forEach { (groupId, config) ->
-            if (!config.enabled) return@forEach
-            val activeUntil = emergencyStates[groupId]?.activeUntilEpochMs ?: return@forEach
-            val remainingMs = (activeUntil - nowMs).coerceAtLeast(0L)
-            if (remainingMs > 0L) {
-                emergencyBoostMsByGroup[groupId] = remainingMs
-                emergencyUntilByGroup[groupId] = activeUntil
-            }
-        }
-
-        if (appLimits.isEmpty() && groupLimits.isEmpty()) {
-            return@withContext BudgetEnforceResult(
-                blockedPackages = emptySet(),
-                blockedGroupIds = emptySet(),
-                reason = "No budget limits configured",
-                reasons = emptyList(),
-                usageAccessGranted = true,
-                nextCheckAtMs = boundaryCheckAtMs,
-                emergencyDailyBoostMsByGroup = emergencyBoostMsByGroup,
-                emergencyActiveUntilByGroup = emergencyUntilByGroup
-            )
-        }
-
+        val nowMs = now.toInstant().toEpochMilli()
         val dayStartMs = UsageWindow.startOfDayMs(now)
         val hourStartMs = UsageWindow.startOfHourMs(now)
-        val dayUsageMs = queryAggregateUsageMs(dayStartMs, nowMs)
-        val hourUsageMs = queryAggregateUsageMs(hourStartMs, nowMs)
-        val opensByPkg = usageReader.readOpens(dayStartMs, nowMs)
-            .groupingBy { it }
-            .eachCount()
+        val usageInputs = runCatching {
+            UsageInputs(
+                usedTodayMs = queryAggregateUsageMs(dayStartMs, nowMs),
+                usedHourMs = queryStrictUsageMs(hourStartMs, nowMs),
+                opensToday = usageReader.readOpens(dayStartMs, nowMs).groupingBy { it }.eachCount()
+            )
+        }.getOrElse { throwable ->
+            FocusLog.e(FocusEventId.BUDGET_EVAL, "Usage ingestion failed", throwable)
+            return@withContext UsageSnapshotResult(
+                usageInputs = UsageInputs(emptyMap(), emptyMap(), emptyMap()),
+                usageAccessGranted = false,
+                nextCheckAtMs = boundaryCheckAtMs
+            )
+        }
 
-        val decision = UsageBudgetEvaluator.evaluate(
-            usedTodayMs = dayUsageMs,
-            usedHourMs = hourUsageMs,
-            opensToday = opensByPkg,
-            appLimits = appLimits.map { AppLimitRule(it.packageName, it.dailyLimitMs) },
-            groupLimits = groupLimits.map {
-                GroupLimitRule(
-                    groupId = it.groupId,
-                    dailyLimitMs = it.dailyLimitMs,
-                    hourlyLimitMs = it.hourlyLimitMs,
-                    opensPerDay = it.opensPerDay
-                )
-            },
-            appGroups = mappings.map { AppGroupRule(packageName = it.packageName, groupId = it.groupId) },
-            emergencyDailyBoostMsByGroup = emergencyBoostMsByGroup
-        )
+        // Log top 5 apps by daily usage
+        val topApps = usageInputs.usedTodayMs.entries.sortedByDescending { it.value }.take(5)
+        FocusLog.d(FocusEventId.BUDGET_SNAPSHOT, "│ usageToday: ${usageInputs.usedTodayMs.size} apps, usageHour: ${usageInputs.usedHourMs.size} apps, opens: ${usageInputs.opensToday.size} apps")
+        topApps.forEach { (pkg, ms) ->
+            val opens = usageInputs.opensToday[pkg] ?: 0
+            val hourMs = usageInputs.usedHourMs[pkg] ?: 0L
+            FocusLog.d(FocusEventId.BUDGET_SNAPSHOT, "│   $pkg: day=${ms / 60_000L}min hour=${hourMs / 60_000L}min opens=$opens")
+        }
+        FocusLog.d(FocusEventId.BUDGET_SNAPSHOT, "└── nextCheckAt=$boundaryCheckAtMs")
 
-        val blocked = decision.blockedPackages - emergencyAllowlist
-        val earliestEmergencyExpiry = emergencyUntilByGroup.values.minOrNull()
-        val nextCheckAtMs = listOfNotNull(
-            boundaryCheckAtMs,
-            nowMs + POLL_INTERVAL_MS,
-            earliestEmergencyExpiry
-        ).minOrNull()
-        FocusLog.i(
-            FocusEventId.BUDGET_EVAL,
-            "Budget evaluated blocked=${blocked.size} reason=${decision.reason}"
-        )
-        BudgetEnforceResult(
-            blockedPackages = blocked,
-            blockedGroupIds = decision.blockedGroupIds,
-            reason = decision.reason,
-            reasons = decision.reasons,
+        UsageSnapshotResult(
+            usageInputs = usageInputs,
             usageAccessGranted = true,
-            nextCheckAtMs = nextCheckAtMs,
-            emergencyDailyBoostMsByGroup = emergencyBoostMsByGroup,
-            emergencyActiveUntilByGroup = emergencyUntilByGroup
+            nextCheckAtMs = boundaryCheckAtMs
         )
     }
 
     suspend fun activateEmergencyUnlock(
-        groupId: String,
+        targetType: EmergencyTargetType,
+        targetId: String,
         now: ZonedDateTime = ZonedDateTime.now()
     ): EmergencyUnlockResult = withContext(Dispatchers.IO) {
-        val budgetDao = db.budgetDao()
-        val config = budgetDao.getGroupEmergencyConfig(groupId)
-            ?: return@withContext EmergencyUnlockResult(
-                success = false,
-                message = "Emergency usage is not configured for $groupId",
-                state = null
-            )
+        FocusLog.d(FocusEventId.BUDGET_EMERGENCY, "┌── activateEmergencyUnlock() type=$targetType id=$targetId")
+        val normalizedTargetId = targetId.trim()
+        if (normalizedTargetId.isBlank()) {
+            FocusLog.w(FocusEventId.BUDGET_EMERGENCY, "└── REJECTED: blank target")
+            return@withContext EmergencyUnlockResult(false, "Emergency target is invalid", null)
+        }
+
+        val config = loadEmergencyConfig(targetType, normalizedTargetId)
+            ?: run {
+                FocusLog.w(FocusEventId.BUDGET_EMERGENCY, "└── REJECTED: no config for $normalizedTargetId")
+                return@withContext EmergencyUnlockResult(
+                    success = false,
+                    message = "Emergency usage is not configured for $normalizedTargetId",
+                    state = null
+                )
+            }
         if (!config.enabled || config.unlocksPerDay <= 0 || config.minutesPerUnlock <= 0) {
+            FocusLog.w(FocusEventId.BUDGET_EMERGENCY, "└── REJECTED: disabled (enabled=${config.enabled} unlocks=${config.unlocksPerDay} minutes=${config.minutesPerUnlock})")
             return@withContext EmergencyUnlockResult(
                 success = false,
-                message = "Emergency usage is disabled for $groupId",
+                message = "Emergency usage is disabled for $normalizedTargetId",
                 state = null
             )
         }
+        FocusLog.d(FocusEventId.BUDGET_EMERGENCY, "│ config: unlocks=${config.unlocksPerDay}/day minutes=${config.minutesPerUnlock}/unlock")
 
         val dayKey = UsageWindow.dayKey(now)
-        budgetDao.clearEmergencyStateBefore(dayKey)
-        val updated = budgetDao.consumeGroupEmergencyUnlock(dayKey, groupId, now.toInstant().toEpochMilli())
+        val nowMs = now.toInstant().toEpochMilli()
+        val updated = db.withTransaction {
+            val budgetDao = db.budgetDao()
+            budgetDao.clearExpiredEmergencyStateBefore(dayKey, nowMs)
+            val current = budgetDao.getEmergencyState(dayKey, targetType.name, normalizedTargetId)
+                ?: EmergencyState(
+                    dayKey = dayKey,
+                    targetType = targetType.name,
+                    targetId = normalizedTargetId,
+                    unlocksUsedToday = 0,
+                    activeUntilEpochMs = null
+                )
+            FocusLog.d(FocusEventId.BUDGET_EMERGENCY, "│ currentState: used=${current.unlocksUsedToday}/${config.unlocksPerDay} activeUntil=${current.activeUntilEpochMs}")
+            if (current.unlocksUsedToday >= config.unlocksPerDay) {
+                FocusLog.w(FocusEventId.BUDGET_EMERGENCY, "└── REJECTED: no unlocks remaining")
+                return@withTransaction null
+            }
+
+            val nextUntil = nowMs + (config.minutesPerUnlock * 60_000L)
+            val nextState = current.copy(
+                unlocksUsedToday = current.unlocksUsedToday + 1,
+                activeUntilEpochMs = max(current.activeUntilEpochMs ?: 0L, nextUntil)
+            )
+            budgetDao.upsertEmergencyState(nextState)
+            nextState
+        }
         if (updated == null) {
-            val current = budgetDao.getGroupEmergencyState(dayKey, groupId)
-            val used = current?.unlocksUsedToday ?: 0
-            val remaining = (config.unlocksPerDay - used).coerceAtLeast(0)
             return@withContext EmergencyUnlockResult(
                 success = false,
-                message = if (remaining <= 0) {
-                    "No emergency unlocks remaining today for $groupId"
-                } else {
-                    "Unable to start emergency unlock for $groupId"
-                },
+                message = "No emergency unlocks remaining today for $normalizedTargetId",
                 state = null
             )
         }
-
         val untilText = updated.activeUntilEpochMs?.let {
             DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(it))
         } ?: "unknown"
+        FocusLog.i(FocusEventId.BUDGET_EMERGENCY, "└── ✅ ACTIVATED: $normalizedTargetId until=$untilText used=${updated.unlocksUsedToday}/${config.unlocksPerDay}")
         EmergencyUnlockResult(
             success = true,
-            message = "Emergency unlock active for $groupId until $untilText",
+            message = "Emergency unlock active for $normalizedTargetId until $untilText",
             state = updated
         )
     }
 
+    suspend fun getEmergencyStatesForDay(dayKey: String): List<EmergencyState> = withContext(Dispatchers.IO) {
+        val nowMs = System.currentTimeMillis()
+        db.budgetDao().clearExpiredEmergencyStateBefore(dayKey, nowMs)
+        db.budgetDao().getCurrentOrActiveEmergencyStates(dayKey, nowMs)
+    }
+
+    suspend fun getActiveEmergencyStates(now: ZonedDateTime = ZonedDateTime.now()): List<EmergencyState> = withContext(Dispatchers.IO) {
+        val dayKey = UsageWindow.dayKey(now)
+        val nowMs = now.toInstant().toEpochMilli()
+        db.budgetDao().clearExpiredEmergencyStateBefore(dayKey, nowMs)
+        db.budgetDao().getCurrentOrActiveEmergencyStates(dayKey, nowMs)
+    }
+
+    private suspend fun loadEmergencyConfig(
+        targetType: EmergencyTargetType,
+        targetId: String
+    ): EmergencyConfigInput? {
+        val dao = db.budgetDao()
+        return when (targetType) {
+            EmergencyTargetType.GROUP -> {
+                val config = dao.getGroupEmergencyConfig(targetId) ?: return null
+                EmergencyConfigInput(
+                    enabled = config.enabled,
+                    unlocksPerDay = clampEmergencyUnlocksPerDay(config.unlocksPerDay),
+                    minutesPerUnlock = clampEmergencyMinutesPerUnlock(config.minutesPerUnlock)
+                )
+            }
+            EmergencyTargetType.APP -> {
+                val policy = dao.getAppPolicy(targetId) ?: return null
+                EmergencyConfigInput(
+                    enabled = policy.emergencyEnabled,
+                    unlocksPerDay = clampEmergencyUnlocksPerDay(policy.unlocksPerDay),
+                    minutesPerUnlock = clampEmergencyMinutesPerUnlock(policy.minutesPerUnlock)
+                )
+            }
+        }
+    }
+
     private fun queryAggregateUsageMs(fromMs: Long, toMs: Long): Map<String, Long> {
+        if (toMs <= fromMs) return emptyMap()
         val usageStats = usageStatsManager?.queryAndAggregateUsageStats(fromMs, toMs).orEmpty()
         return usageStats
             .asSequence()
@@ -215,7 +212,11 @@ class BudgetOrchestrator(context: Context) {
             .associate { (pkg, stats) -> pkg to stats.totalTimeInForeground }
     }
 
-    private companion object {
-        private const val POLL_INTERVAL_MS = 2 * 60_000L
+    private fun queryStrictUsageMs(fromMs: Long, toMs: Long): Map<String, Long> {
+        if (toMs <= fromMs) return emptyMap()
+        return UsageAggregator.aggregate(
+            slices = usageReader.readStrictWindow(fromMs, toMs).slices,
+            opensEvents = emptyList()
+        ).timeMsByPkg
     }
 }

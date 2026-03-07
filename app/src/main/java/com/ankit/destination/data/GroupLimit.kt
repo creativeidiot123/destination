@@ -11,5 +11,6 @@ data class GroupLimit(
     val dailyLimitMs: Long,
     val hourlyLimitMs: Long,
     val opensPerDay: Int,
+    val strictEnabled: Boolean = false,
     val enabled: Boolean = true
 )

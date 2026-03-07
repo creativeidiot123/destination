@@ -1,16 +1,19 @@
 package com.ankit.destination
 
 import com.ankit.destination.policy.ModeState
+import com.ankit.destination.policy.EmergencyConfigInput
+import com.ankit.destination.policy.GroupPolicyInput
 import com.ankit.destination.policy.PolicyEngine
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PolicyEngineLogicTest {
 
     @Test
-    fun touchGrassBreakExpiry_exitsNuclear_afterNextEvaluation() {
+    fun resolveEffectiveMode_staysNormal_whenLegacyTouchGrassStateExpires() {
         val nowMs = 1_000_000L
         val mode = PolicyEngine.resolveEffectiveMode(
             manualMode = ModeState.NORMAL,
@@ -22,7 +25,7 @@ class PolicyEngineLogicTest {
     }
 
     @Test
-    fun touchGrassActive_forcesNuclear() {
+    fun resolveEffectiveMode_ignoresLegacyTouchGrassBreaks() {
         val nowMs = 1_000_000L
         val mode = PolicyEngine.resolveEffectiveMode(
             manualMode = ModeState.NORMAL,
@@ -30,11 +33,11 @@ class PolicyEngineLogicTest {
             touchGrassBreakUntilMs = nowMs + 60_000L,
             nowMs = nowMs
         )
-        assertEquals(ModeState.NUCLEAR, mode)
+        assertEquals(ModeState.NORMAL, mode)
     }
 
     @Test
-    fun scheduleAlwaysWins_overManualAndTouchGrass() {
+    fun resolveEffectiveMode_ignoresLegacyScheduleWideMode() {
         val nowMs = 1_000_000L
         val mode = PolicyEngine.resolveEffectiveMode(
             manualMode = ModeState.NORMAL,
@@ -42,7 +45,7 @@ class PolicyEngineLogicTest {
             touchGrassBreakUntilMs = null,
             nowMs = nowMs
         )
-        assertEquals(ModeState.NUCLEAR, mode)
+        assertEquals(ModeState.NORMAL, mode)
     }
 
     @Test
@@ -92,6 +95,50 @@ class PolicyEngineLogicTest {
     }
 
     @Test
+    fun resolveStrictScheduleActive_usesActiveStrictScheduleBlock_evenWithoutStrictGroupFlag() {
+        val strictActive = PolicyEngine.resolveStrictScheduleActive(
+            scheduleStrictActive = true,
+            groupInputs = listOf(
+                GroupPolicyInput(
+                    groupId = "study",
+                    priorityIndex = 0,
+                    strictEnabled = false,
+                    dailyLimitMs = 0L,
+                    hourlyLimitMs = 0L,
+                    opensPerDay = 0,
+                    members = setOf("app.one"),
+                    emergencyConfig = EmergencyConfigInput(false, 0, 0),
+                    scheduleBlocked = true
+                )
+            )
+        )
+
+        assertTrue(strictActive)
+    }
+
+    @Test
+    fun resolveStrictScheduleActive_preservesExistingStrictGroupFallback() {
+        val strictActive = PolicyEngine.resolveStrictScheduleActive(
+            scheduleStrictActive = false,
+            groupInputs = listOf(
+                GroupPolicyInput(
+                    groupId = "study",
+                    priorityIndex = 0,
+                    strictEnabled = true,
+                    dailyLimitMs = 0L,
+                    hourlyLimitMs = 0L,
+                    opensPerDay = 0,
+                    members = setOf("app.one"),
+                    emergencyConfig = EmergencyConfigInput(false, 0, 0),
+                    scheduleBlocked = true
+                )
+            )
+        )
+
+        assertTrue(strictActive)
+    }
+
+    @Test
     fun resolveEmergencyApps_keepsExplicitEmptySelection() {
         assertEquals(
             emptySet<String>(),
@@ -121,5 +168,42 @@ class PolicyEngineLogicTest {
         }
 
         assertEquals(setOf("controller", "installed"), retained)
+    }
+
+    @Test
+    fun pickNextAlarmAtMs_ignores_stale_candidates() {
+        val next = PolicyEngine.pickNextAlarmAtMs(
+            nowMs = 10_000L,
+            scheduleNextTransitionAtMs = 9_000L,
+            budgetNextCheckAtMs = 15_000L,
+            touchGrassBreakUntilMs = 8_000L
+        )
+
+        assertEquals(15_000L, next)
+    }
+
+    @Test
+    fun pickNextAlarmAtMs_returns_null_when_all_candidates_are_stale() {
+        val next = PolicyEngine.pickNextAlarmAtMs(
+            nowMs = 10_000L,
+            scheduleNextTransitionAtMs = 9_000L,
+            budgetNextCheckAtMs = 10_000L,
+            touchGrassBreakUntilMs = null
+        )
+
+        assertNull(next)
+    }
+
+    @Test
+    fun pickNextAlarmAtMs_reschedules_immediately_for_overdue_budget_when_requested() {
+        val next = PolicyEngine.pickNextAlarmAtMs(
+            nowMs = 10_000L,
+            scheduleNextTransitionAtMs = null,
+            budgetNextCheckAtMs = 10_000L,
+            touchGrassBreakUntilMs = null,
+            keepOverdueBudgetCheck = true
+        )
+
+        assertEquals(10_001L, next)
     }
 }

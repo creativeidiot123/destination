@@ -24,6 +24,10 @@ class VpnStatusStore(context: Context) {
 
     fun getDomainRuleCount(): Int = prefs.getInt(KEY_DOMAIN_RULE_COUNT, 0)
 
+    fun clear() {
+        prefs.edit().clear().apply()
+    }
+
     companion object {
         private const val PREFS_NAME = "focus_vpn_store"
         private const val KEY_RUNNING = "vpn_running"

@@ -1,19 +1,30 @@
-﻿package com.ankit.destination.policy
+package com.ankit.destination.policy
 
 import android.app.Activity
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import com.ankit.destination.budgets.BudgetOrchestrator
+import com.ankit.destination.data.AppGroupMap
+import com.ankit.destination.data.AppPolicy
+import com.ankit.destination.data.EmergencyState
+import com.ankit.destination.data.EmergencyTargetType
 import com.ankit.destination.data.FocusDatabase
 import com.ankit.destination.data.GlobalControls
+import com.ankit.destination.data.GroupEmergencyConfig
+import com.ankit.destination.data.GroupLimit
+import com.ankit.destination.data.ScheduleBlockGroup
+import com.ankit.destination.schedule.AlarmScheduler
 import com.ankit.destination.schedule.ScheduleDecision
+import com.ankit.destination.schedule.ScheduleEvaluator
+import com.ankit.destination.usage.UsageAccess
+import com.ankit.destination.usage.UsageAccessMonitor
 import com.ankit.destination.vpn.FocusVpnService
 import com.ankit.destination.vpn.VpnStatusStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
-import java.text.DateFormat
-import java.util.Date
+import java.time.ZonedDateTime
 
 class PolicyEngine(context: Context) {
     private val appContext = context.applicationContext
@@ -21,8 +32,11 @@ class PolicyEngine(context: Context) {
     private val store = PolicyStore(appContext)
     private val resolver = PackageResolver(appContext)
     private val db by lazy { FocusDatabase.get(appContext) }
-    private val evaluator = PolicyEvaluator(resolver)
+    private val budgetOrchestrator by lazy { BudgetOrchestrator(appContext) }
+    private val evaluator = PolicyEvaluator(resolver, appContext.packageName)
     private val applier = PolicyApplier(facade)
+    private val alarmScheduler by lazy { AlarmScheduler(appContext) }
+    @Volatile private var policyControlsCache: PolicyControls? = null
 
     fun isDeviceOwner(): Boolean = facade.isDeviceOwner()
 
@@ -32,7 +46,7 @@ class PolicyEngine(context: Context) {
 
     fun isScheduleLockActive(): Boolean = store.isScheduleLockEnforced()
 
-    fun isStrictScheduleActive(): Boolean = store.isScheduleStrictEnforced()
+    fun isStrictScheduleActive(): Boolean = store.isScheduleStrictComputed()
 
     fun isScheduleLockComputed(): Boolean = store.isScheduleLockComputed()
 
@@ -54,13 +68,39 @@ class PolicyEngine(context: Context) {
 
     fun getScheduleNextTransitionAtMs(): Long? = store.getScheduleNextTransitionAtMs()
 
-    fun getTouchGrassThreshold(): Int = store.getTouchGrassThreshold()
-
-    fun getTouchGrassBreakMinutes(): Int = store.getTouchGrassBreakMinutes()
-
-    fun setTouchGrassConfig(threshold: Int, breakMinutes: Int) {
-        store.setTouchGrassThreshold(threshold)
-        store.setTouchGrassBreakMinutes(breakMinutes)
+    fun currentUsageAccessComplianceState(
+        usageAccessGranted: Boolean = UsageAccess.hasUsageAccess(appContext)
+    ): UsageAccessComplianceState {
+        val lockdownEligible = isUsageAccessLockdownEligible(
+            deviceOwnerActive = isDeviceOwner(),
+            provisioningFinalizationState = store.getProvisioningFinalizationState(),
+            hasSuccessfulPolicyApply = store.hasSuccessfulPolicyApply(),
+            hasAnyPriorApply = store.hasAnyPriorApply()
+        )
+        val lockdownActive = lockdownEligible && !usageAccessGranted
+        val recoveryResolution = if (lockdownActive) {
+            resolver.resolveUsageAccessRecoveryPackages()
+        } else {
+            null
+        }
+        val baseReason = if (lockdownActive) {
+            "Usage Access missing: recovery lockdown active"
+        } else {
+            null
+        }
+        val reason = when {
+            baseReason == null -> null
+            recoveryResolution == null -> baseReason
+            recoveryResolution.warnings.isEmpty() -> baseReason
+            else -> "$baseReason. ${recoveryResolution.warnings.joinToString("; ")}"
+        }
+        return UsageAccessComplianceState(
+            usageAccessGranted = usageAccessGranted,
+            lockdownEligible = lockdownEligible,
+            lockdownActive = lockdownActive,
+            recoveryAllowlist = recoveryResolution?.packages.orEmpty(),
+            reason = reason
+        )
     }
 
     fun getEmergencyApps(): Set<String> {
@@ -82,81 +122,143 @@ class PolicyEngine(context: Context) {
 
     fun getGlobalControls(): GlobalControls = loadPolicyControls().globalControls
 
+    suspend fun getGlobalControlsAsync(): GlobalControls = loadPolicyControlsAsync().globalControls
+
+    fun getManagedNetworkPolicy(): ManagedNetworkPolicy {
+        return getGlobalControls().toManagedNetworkPolicy(appContext.packageName)
+    }
+
+    fun getManagedVpnPackage(): String? {
+        return when (val policy = getManagedNetworkPolicy()) {
+            is ManagedNetworkPolicy.ForcedVpn -> policy.packageName
+            else -> null
+        }
+    }
+
     fun setGlobalControls(controls: GlobalControls) {
         runBlocking {
-            withContext(Dispatchers.IO) {
-                db.budgetDao().upsertGlobalControls(controls.copy(id = 1))
-            }
+            setGlobalControlsAsync(controls)
         }
+    }
+
+    suspend fun setGlobalControlsAsync(controls: GlobalControls) {
+        withContext(Dispatchers.IO) {
+            db.budgetDao().upsertGlobalControls(controls.copy(id = 1))
+        }
+        invalidatePolicyControlsCache()
     }
 
     fun getAlwaysAllowedApps(): Set<String> = loadPolicyControls().alwaysAllowedApps
 
+    suspend fun getAlwaysAllowedAppsAsync(): Set<String> = loadPolicyControlsAsync().alwaysAllowedApps
+
     fun getAlwaysBlockedApps(): Set<String> = loadPolicyControls().alwaysBlockedApps
 
+    suspend fun getAlwaysBlockedAppsAsync(): Set<String> = loadPolicyControlsAsync().alwaysBlockedApps
+
     fun getUninstallProtectedApps(): Set<String> = loadPolicyControls().uninstallProtectedApps
+
+    suspend fun getUninstallProtectedAppsAsync(): Set<String> = loadPolicyControlsAsync().uninstallProtectedApps
 
     fun addAlwaysAllowedApp(packageName: String) {
         val normalized = packageName.trim()
         if (normalized.isBlank()) return
         runBlocking {
-            withContext(Dispatchers.IO) {
-                db.budgetDao().addAlwaysAllowedExclusive(normalized)
-            }
+            addAlwaysAllowedAppAsync(normalized)
         }
+    }
+
+    suspend fun addAlwaysAllowedAppAsync(packageName: String) {
+        val normalized = packageName.trim()
+        if (normalized.isBlank()) return
+        withContext(Dispatchers.IO) {
+            db.budgetDao().addAlwaysAllowedExclusive(normalized)
+        }
+        invalidatePolicyControlsCache()
     }
 
     fun removeAlwaysAllowedApp(packageName: String) {
         runBlocking {
-            withContext(Dispatchers.IO) {
-                db.budgetDao().deleteAlwaysAllowed(packageName.trim())
-            }
+            removeAlwaysAllowedAppAsync(packageName)
         }
+    }
+
+    suspend fun removeAlwaysAllowedAppAsync(packageName: String) {
+        withContext(Dispatchers.IO) {
+            db.budgetDao().deleteAlwaysAllowed(packageName.trim())
+        }
+        invalidatePolicyControlsCache()
     }
 
     fun addAlwaysBlockedApp(packageName: String) {
         val normalized = packageName.trim()
-        if (normalized.isBlank()) return
+        if (normalized.isBlank() || getAlwaysAllowedApps().contains(normalized)) return
         runBlocking {
-            withContext(Dispatchers.IO) {
-                db.budgetDao().addAlwaysBlockedExclusive(normalized)
-            }
+            addAlwaysBlockedAppAsync(normalized)
         }
+    }
+
+    suspend fun addAlwaysBlockedAppAsync(packageName: String) {
+        val normalized = packageName.trim()
+        if (normalized.isBlank() || loadPolicyControlsAsync().alwaysAllowedApps.contains(normalized)) return
+        withContext(Dispatchers.IO) {
+            db.budgetDao().addAlwaysBlockedExclusive(normalized)
+        }
+        invalidatePolicyControlsCache()
     }
 
     fun removeAlwaysBlockedApp(packageName: String) {
         runBlocking {
-            withContext(Dispatchers.IO) {
-                db.budgetDao().deleteAlwaysBlocked(packageName.trim())
-            }
+            removeAlwaysBlockedAppAsync(packageName)
         }
+    }
+
+    suspend fun removeAlwaysBlockedAppAsync(packageName: String) {
+        withContext(Dispatchers.IO) {
+            db.budgetDao().deleteAlwaysBlocked(packageName.trim())
+        }
+        invalidatePolicyControlsCache()
     }
 
     fun addUninstallProtectedApp(packageName: String) {
         val normalized = packageName.trim()
         if (normalized.isBlank() || normalized == appContext.packageName) return
         runBlocking {
-            withContext(Dispatchers.IO) {
-                db.budgetDao().upsertUninstallProtected(
-                    com.ankit.destination.data.UninstallProtectedApp(normalized)
-                )
-            }
+            addUninstallProtectedAppAsync(normalized)
         }
+    }
+
+    suspend fun addUninstallProtectedAppAsync(packageName: String) {
+        val normalized = packageName.trim()
+        if (normalized.isBlank() || normalized == appContext.packageName) return
+        withContext(Dispatchers.IO) {
+            db.budgetDao().upsertUninstallProtected(
+                com.ankit.destination.data.UninstallProtectedApp(normalized)
+            )
+        }
+        invalidatePolicyControlsCache()
     }
 
     fun removeUninstallProtectedApp(packageName: String) {
         runBlocking {
-            withContext(Dispatchers.IO) {
-                db.budgetDao().deleteUninstallProtected(packageName.trim())
-            }
+            removeUninstallProtectedAppAsync(packageName)
         }
+    }
+
+    suspend fun removeUninstallProtectedAppAsync(packageName: String) {
+        withContext(Dispatchers.IO) {
+            db.budgetDao().deleteUninstallProtected(packageName.trim())
+        }
+        invalidatePolicyControlsCache()
+    }
+
+    fun setManualModePreference(mode: ModeState) {
+        store.setManualMode(mode)
     }
 
     fun setMode(mode: ModeState, hostActivity: Activity? = null, reason: String = "manual"): EngineResult {
         synchronized(APPLY_LOCK) {
             val previousEffectiveMode = store.getDesiredMode()
-            val previousManualMode = store.getManualMode()
-            val previousLockReason = store.getCurrentLockReason()
             val emergencyApps = getEmergencyApps()
 
             FocusLog.i(FocusEventId.MODE_CHANGE_REQUEST, "Requested mode=$mode reason=$reason")
@@ -176,25 +278,9 @@ class PolicyEngine(context: Context) {
                     emergencyApps = emergencyApps
                 )
             }
-            if (mode == ModeState.NORMAL && isTouchGrassBreakEnforced()) {
-                return failureResult(
-                    message = "Touch Grass break is active and cannot be canceled.",
-                    stateMode = previousEffectiveMode,
-                    emergencyApps = emergencyApps
-                )
-            }
-
+            val previousManualMode = store.getManualMode()
             store.setManualMode(mode)
-            val external = computeExternalState()
-            val result = applyModeInternal(
-                targetMode = external.effectiveMode,
-                hostActivity = hostActivity,
-                reason = "manual:$reason",
-                rollbackMode = previousEffectiveMode,
-                rollbackLockReason = previousLockReason,
-                emergencyApps = emergencyApps,
-                external = external
-            )
+            val result = requestApplyNowLocked(hostActivity = hostActivity, reason = "manual:$reason")
             if (!result.success) {
                 store.setManualMode(previousManualMode)
             }
@@ -208,53 +294,7 @@ class PolicyEngine(context: Context) {
         trigger: String,
         hostActivity: Activity? = null
     ): EngineResult {
-        synchronized(APPLY_LOCK) {
-            val emergencyApps = getEmergencyApps()
-            val previousEffective = store.getDesiredMode()
-            val previousEnforced = store.isScheduleLockEnforced()
-            val previousStrict = store.isScheduleStrictEnforced()
-            val previousLockReason = store.getCurrentLockReason()
-            val nextTransitionMs = decision.nextTransitionAt?.toInstant()?.toEpochMilli()
-            store.setScheduleComputedState(
-                active = decision.shouldLock,
-                strictActive = decision.strictActive,
-                blockedGroups = decision.blockedGroupIds,
-                reason = decision.reason,
-                nextTransitionAtMs = nextTransitionMs
-            )
-            store.setScheduleBlockedPackages(scheduleBlockedPackages)
-
-            val external = computeExternalState()
-            val result = applyModeInternal(
-                targetMode = external.effectiveMode,
-                hostActivity = hostActivity,
-                reason = "schedule:$trigger",
-                rollbackMode = previousEffective,
-                rollbackLockReason = previousLockReason,
-                emergencyApps = emergencyApps,
-                external = external
-            )
-            val enforced = if (result.success) {
-                decision.shouldLock
-            } else {
-                previousEnforced && store.getDesiredMode() == ModeState.NUCLEAR
-            }
-            store.setScheduleEnforced(enforced)
-            val strictEnforced = if (result.success) {
-                decision.strictActive
-            } else {
-                previousStrict && store.getDesiredMode() == ModeState.NUCLEAR
-            }
-            store.setScheduleStrictEnforced(strictEnforced)
-            if (result.success) {
-                store.setScheduleBlockedGroups(decision.blockedGroupIds)
-                store.setScheduleBlockedPackages(scheduleBlockedPackages)
-                if (previousStrict && !decision.strictActive) {
-                    store.clearStrictInstallSuspendedPackages()
-                }
-            }
-            return result
-        }
+        return requestApplyNow(hostActivity = hostActivity, reason = "schedule:$trigger")
     }
 
     fun setBudgetState(
@@ -266,72 +306,162 @@ class PolicyEngine(context: Context) {
         hostActivity: Activity? = null,
         trigger: String = "budget"
     ): EngineResult {
-        synchronized(APPLY_LOCK) {
-            val previousMode = store.getDesiredMode()
-            val previousLockReason = store.getCurrentLockReason()
-            val emergencyApps = getEmergencyApps()
-            val effectiveBlocked = if (usageAccessGranted) {
-                blockedPackages
-            } else {
-                store.getBudgetBlockedPackages()
-            }
-            val effectiveBlockedGroups = if (usageAccessGranted) {
-                blockedGroupIds
-            } else {
-                store.getBudgetBlockedGroupIds()
-            }
-            val effectiveReason = if (usageAccessGranted) {
-                reason
-            } else {
-                "Usage access missing; keeping previous budget blocks"
-            }
-            store.setBudgetState(
-                blockedPackages = effectiveBlocked,
-                blockedGroupIds = effectiveBlockedGroups,
-                reason = effectiveReason,
-                usageAccessGranted = usageAccessGranted,
-                nextCheckAtMs = nextCheckAtMs
-            )
-            val external = computeExternalState()
-            return applyModeInternal(
-                targetMode = external.effectiveMode,
-                hostActivity = hostActivity,
-                reason = "budget:$trigger",
-                rollbackMode = previousMode,
-                rollbackLockReason = previousLockReason,
-                emergencyApps = emergencyApps,
-                external = external
-            )
-        }
+        return requestApplyNow(hostActivity = hostActivity, reason = "budget:$trigger")
     }
 
     fun shouldRunBudgetEvaluation(nowMs: Long = System.currentTimeMillis(), graceMs: Long = 15_000L): Boolean {
         return isBudgetEvaluationDue(nowMs, store.getBudgetNextCheckAtMs(), graceMs)
     }
 
-    fun reapplyDesiredMode(hostActivity: Activity? = null, reason: String = "reapply"): EngineResult {
+    fun requestApplyNow(hostActivity: Activity? = null, reason: String = "apply_now"): EngineResult {
         synchronized(APPLY_LOCK) {
-            val emergencyApps = getEmergencyApps()
-            val previousMode = store.getDesiredMode()
-            val previousLockReason = store.getCurrentLockReason()
+            return requestApplyNowLocked(hostActivity = hostActivity, reason = reason)
+        }
+    }
 
+    fun reapplyDesiredMode(hostActivity: Activity? = null, reason: String = "reapply"): EngineResult {
+        return requestApplyNow(hostActivity = hostActivity, reason = "reapply:$reason")
+    }
+
+    fun resetToFreshState(hostActivity: Activity? = null, reason: String = "fresh_reset"): EngineResult {
+        synchronized(APPLY_LOCK) {
             if (!isDeviceOwner()) {
                 return failureResult(
                     message = "Not device owner",
-                    stateMode = previousMode,
-                    emergencyApps = emergencyApps
+                    stateMode = store.getDesiredMode(),
+                    emergencyApps = getEmergencyApps()
                 )
             }
-            val external = computeExternalState()
-            return applyModeInternal(
-                targetMode = external.effectiveMode,
-                hostActivity = hostActivity,
-                reason = "reapply:$reason",
-                rollbackMode = previousMode,
-                rollbackLockReason = previousLockReason,
-                emergencyApps = emergencyApps,
-                external = external
+
+            val trackedPackages = sanitizeTrackedPackages()
+            val cleanControls = GlobalControls()
+            val cleanEmergencyApps = resolveEmergencyApps(
+                storedEmergencyApps = emptySet(),
+                hasExplicitSelection = false
             )
+
+            val cleanState = evaluator.evaluate(
+                mode = ModeState.NORMAL,
+                emergencyApps = cleanEmergencyApps,
+                alwaysAllowedApps = emptySet(),
+                alwaysBlockedApps = emptySet(),
+                strictInstallBlockedPackages = emptySet(),
+                uninstallProtectedApps = emptySet(),
+                globalControls = cleanControls,
+                previouslySuspended = trackedPackages.previouslySuspended,
+                previouslyUninstallProtected = trackedPackages.previouslyUninstallProtected,
+                budgetBlockedPackages = emptySet(),
+                primaryReasonByPackage = emptyMap(),
+                lockReason = null,
+                touchGrassBreakActive = false,
+                usageAccessComplianceState = UsageAccessComplianceState(
+                    usageAccessGranted = true,
+                    lockdownEligible = false,
+                    lockdownActive = false,
+                    recoveryAllowlist = emptySet(),
+                    reason = null
+                )
+            )
+            val outcome = runCatching {
+                store.resetForFreshStart()
+                invalidatePolicyControlsCache()
+                VpnStatusStore(appContext).clear()
+                FocusLog.clearHistory(appContext)
+                FocusLog.w(
+                    appContext,
+                    FocusEventId.POLICY_RESET_START,
+                    "Reset requested reason=$reason suspended=${trackedPackages.previouslySuspended.size} uninstallProtected=${trackedPackages.previouslyUninstallProtected.size}"
+                )
+
+                runBlocking {
+                    withContext(Dispatchers.IO) {
+                        db.scheduleDao().clearAllSchedules()
+                        db.budgetDao().resetAllPolicyData(cleanControls)
+                    }
+                }
+                FocusVpnService.stop(appContext)
+
+                val applyResult = applier.apply(cleanState, hostActivity)
+                val verification = applier.verify(cleanState, hostActivity)
+                val success = applyResult.errors.isEmpty() && verification.passed
+                val errorMessage = if (success) {
+                    null
+                } else {
+                    buildList {
+                        addAll(applyResult.errors)
+                        addAll(verification.issues)
+                    }.joinToString(" | ")
+                }
+
+                store.recordApply(
+                    state = cleanState,
+                    applyResult = applyResult,
+                    verification = verification,
+                    errorMessage = errorMessage,
+                    controllerPackageName = appContext.packageName
+                )
+
+                if (success) {
+                    FocusLog.i(
+                        appContext,
+                        FocusEventId.POLICY_RESET_DONE,
+                        "Reset applied successfully reason=$reason"
+                    )
+                    EngineResult(
+                        success = true,
+                        message = "App reset to fresh policy state",
+                        verification = verification,
+                        state = cleanState
+                    )
+                } else {
+                    FocusLog.w(
+                        appContext,
+                        FocusEventId.POLICY_RESET_FAIL,
+                        "Reset completed with issues reason=$reason error=$errorMessage"
+                    )
+                    EngineResult(
+                        success = false,
+                        message = "Reset completed with issues: $errorMessage",
+                        verification = verification,
+                        state = cleanState
+                    )
+                }
+            }
+
+            return outcome.getOrElse { throwable ->
+                val message = throwable.message ?: "Unknown reset failure"
+                FocusLog.w(
+                    appContext,
+                    FocusEventId.POLICY_RESET_FAIL,
+                    "Reset failed reason=$reason error=$message"
+                )
+                EngineResult(
+                    success = false,
+                    message = "Reset failed: $message",
+                    verification = PolicyVerificationResult(
+                        passed = false,
+                        issues = listOf(message),
+                        suspendedChecked = 0,
+                        suspendedMismatchCount = 0,
+                        lockTaskModeActive = null
+                    ),
+                    state = cleanState
+                )
+            }
+        }
+    }
+
+    fun removeDeviceOwner(reason: String = "manual_remove"): Result<Unit> {
+        return runCatching {
+            if (!isDeviceOwner()) {
+                error("Destination is not the active device owner")
+            }
+            FocusLog.w(
+                appContext,
+                FocusEventId.POLICY_RESET_START,
+                "Device owner removal requested reason=$reason"
+            )
+            facade.clearDeviceOwnerApp()
         }
     }
 
@@ -343,6 +473,7 @@ class PolicyEngine(context: Context) {
             emergencyApps = getEmergencyApps(),
             alwaysAllowedApps = external.policyControls.alwaysAllowedApps,
             alwaysBlockedApps = external.policyControls.alwaysBlockedInstalledPackages,
+            strictInstallBlockedPackages = external.strictInstallBlockedPackages,
             uninstallProtectedApps = external.policyControls.uninstallProtectedApps,
             globalControls = external.policyControls.globalControls,
             previouslySuspended = trackedPackages.previouslySuspended,
@@ -350,7 +481,8 @@ class PolicyEngine(context: Context) {
             budgetBlockedPackages = external.budgetBlockedPackages,
             primaryReasonByPackage = external.primaryReasonByPackage,
             lockReason = external.lockReason,
-            touchGrassBreakActive = external.touchGrassBreakActive
+            touchGrassBreakActive = external.touchGrassBreakActive,
+            usageAccessComplianceState = external.usageAccessComplianceState
         )
         return applier.verify(state, hostActivity)
     }
@@ -364,6 +496,7 @@ class PolicyEngine(context: Context) {
             emergencyApps = getEmergencyApps(),
             alwaysAllowedApps = external.policyControls.alwaysAllowedApps,
             alwaysBlockedApps = external.policyControls.alwaysBlockedInstalledPackages,
+            strictInstallBlockedPackages = external.strictInstallBlockedPackages,
             uninstallProtectedApps = external.policyControls.uninstallProtectedApps,
             globalControls = external.policyControls.globalControls,
             previouslySuspended = trackedPackages.previouslySuspended,
@@ -371,7 +504,8 @@ class PolicyEngine(context: Context) {
             budgetBlockedPackages = external.budgetBlockedPackages,
             primaryReasonByPackage = external.primaryReasonByPackage,
             lockReason = external.lockReason,
-            touchGrassBreakActive = external.touchGrassBreakActive
+            touchGrassBreakActive = external.touchGrassBreakActive,
+            usageAccessComplianceState = external.usageAccessComplianceState
         )
         val restrictions = FocusConfig.nuclearRestrictions().associateWith { facade.hasUserRestriction(it) }
         val scheduleReason = store.getScheduleLockReason()
@@ -379,10 +513,16 @@ class PolicyEngine(context: Context) {
         val scheduleActive = store.isScheduleLockEnforced()
         val scheduleStrictComputed = store.isScheduleStrictComputed()
         val scheduleStrictActive = store.isScheduleStrictEnforced()
+        val compliance = external.usageAccessComplianceState
         return DiagnosticsSnapshot(
             deviceOwner = isDeviceOwner(),
             desiredMode = desiredMode,
             manualMode = store.getManualMode(),
+            usageAccessGranted = compliance.usageAccessGranted,
+            usageAccessRecoveryLockdownActive = compliance.lockdownActive,
+            usageAccessRecoveryAllowlist = compliance.recoveryAllowlist,
+            usageAccessRecoveryReason = compliance.reason,
+            lastUsageAccessCheckAtMs = UsageAccessMonitor.currentState.value.lastCheckAtMs,
             scheduleLockComputed = scheduleComputed,
             scheduleLockActive = scheduleActive,
             scheduleStrictComputed = scheduleStrictComputed,
@@ -395,26 +535,33 @@ class PolicyEngine(context: Context) {
             budgetReason = store.getBudgetReason(),
             budgetUsageAccessGranted = store.isBudgetUsageAccessGranted(),
             budgetNextCheckAtMs = store.getBudgetNextCheckAtMs(),
-            touchGrassBreakActive = external.touchGrassBreakActive,
-            touchGrassBreakUntilMs = store.getTouchGrassBreakUntilMs(),
-            unlockCountToday = store.getUnlockCountToday(),
-            unlockCountDay = store.getUnlockCountDay(),
-            touchGrassThreshold = store.getTouchGrassThreshold(),
-            touchGrassBreakMinutes = store.getTouchGrassBreakMinutes(),
+            touchGrassBreakActive = false,
+            touchGrassBreakUntilMs = null,
+            unlockCountToday = 0,
+            unlockCountDay = null,
+            touchGrassThreshold = 0,
+            touchGrassBreakMinutes = 0,
             lockTaskPackages = runCatching { facade.getLockTaskPackages().toSet() }.getOrDefault(emptySet()),
             lockTaskFeatures = runCatching { facade.getLockTaskFeatures() }.getOrNull() ?: expected.lockTaskFeatures,
-            statusBarDisabled = expected.statusBarDisabled,
+            statusBarDisabledObserved = null,
+            statusBarDisabledExpected = expected.statusBarDisabled,
             lastAppliedAtMs = store.getLastAppliedAtMs(),
             lastVerificationPassed = store.getLastVerifyPassed(),
             lastError = store.getLastError(),
             lastSuspendedPackages = store.getLastSuspendedPackages(),
             restrictions = restrictions,
             vpnActive = isVpnActive(),
-            vpnRequiredForNuclear = FocusConfig.requireVpnForNuclear,
-            vpnLockdownRequired = FocusConfig.enforceAlwaysOnVpnLockdown,
+            vpnRequiredForNuclear = false,
+            vpnLockdownRequired = shouldEnforceVpnLockdown(external.policyControls.globalControls, appContext.packageName),
             vpnLastError = VpnStatusStore(appContext).getLastError(),
             alwaysOnVpnPackage = runCatching { facade.getAlwaysOnVpnPackage() }.getOrNull(),
             alwaysOnVpnLockdown = runCatching { facade.isAlwaysOnVpnLockdownEnabled() }.getOrNull(),
+            privateDnsMode = runCatching { facade.getGlobalPrivateDnsMode() }.getOrNull(),
+            privateDnsHost = runCatching { facade.getGlobalPrivateDnsHost() }.getOrNull(),
+            managedNetworkMode = expected.managedNetworkPolicy.label(),
+            managedVpnPackage = (expected.managedNetworkPolicy as? ManagedNetworkPolicy.ForcedVpn)?.packageName,
+            managedVpnLockdown = (expected.managedNetworkPolicy as? ManagedNetworkPolicy.ForcedVpn)?.lockdown,
+            managedPrivateDnsHost = (expected.managedNetworkPolicy as? ManagedNetworkPolicy.ForcedPrivateDns)?.hostname,
             domainRuleCount = VpnStatusStore(appContext).getDomainRuleCount(),
             currentLockReason = store.getCurrentLockReason(),
             emergencyApps = getEmergencyApps(),
@@ -423,13 +570,16 @@ class PolicyEngine(context: Context) {
             alwaysBlockedApps = external.policyControls.alwaysBlockedApps,
             uninstallProtectedApps = external.policyControls.uninstallProtectedApps,
             globalControls = external.policyControls.globalControls,
-            primaryReasonByPackage = external.primaryReasonByPackage
+            primaryReasonByPackage = expected.primaryReasonByPackage
         )
     }
 
     fun onNewPackageInstalledDuringStrictSchedule(packageName: String): Boolean {
         synchronized(APPLY_LOCK) {
             if (!isDeviceOwner()) return false
+            val orchestrated = orchestrateCurrentPolicy()
+            persistComputedState(orchestrated)
+            if (!orchestrated.strictActive) return false
             val controls = loadPolicyControls()
             if (controls.alwaysAllowedApps.contains(packageName)) return false
             val allowlist = resolver.resolveAllowlist(
@@ -453,6 +603,12 @@ class PolicyEngine(context: Context) {
         emergencyApps: Set<String>,
         external: ExternalState
     ): EngineResult {
+        val normalizedTargetMode = resolveEffectiveMode(
+            manualMode = targetMode,
+            scheduleComputed = false,
+            touchGrassBreakUntilMs = null,
+            nowMs = System.currentTimeMillis()
+        )
         if (!isDeviceOwner()) {
             return failureResult(
                 message = "Not device owner",
@@ -460,10 +616,7 @@ class PolicyEngine(context: Context) {
                 emergencyApps = emergencyApps
             )
         }
-        val vpnRequiredForThisApply =
-            targetMode == ModeState.NUCLEAR &&
-                FocusConfig.requireVpnForNuclear &&
-                external.lockReason == "Manual Nuclear mode"
+        val vpnRequiredForThisApply = false
         if (vpnRequiredForThisApply && !isVpnActive()) {
             return failureResult(
                 message = "VPN is required before enabling Nuclear mode",
@@ -474,10 +627,11 @@ class PolicyEngine(context: Context) {
 
         val trackedPackages = sanitizeTrackedPackages()
         val state = evaluator.evaluate(
-            mode = targetMode,
+            mode = normalizedTargetMode,
             emergencyApps = emergencyApps,
             alwaysAllowedApps = external.policyControls.alwaysAllowedApps,
             alwaysBlockedApps = external.policyControls.alwaysBlockedInstalledPackages,
+            strictInstallBlockedPackages = external.strictInstallBlockedPackages,
             uninstallProtectedApps = external.policyControls.uninstallProtectedApps,
             globalControls = external.policyControls.globalControls,
             previouslySuspended = trackedPackages.previouslySuspended,
@@ -485,10 +639,15 @@ class PolicyEngine(context: Context) {
             budgetBlockedPackages = external.budgetBlockedPackages,
             primaryReasonByPackage = external.primaryReasonByPackage,
             lockReason = external.lockReason,
-            touchGrassBreakActive = external.touchGrassBreakActive
+            touchGrassBreakActive = external.touchGrassBreakActive,
+            usageAccessComplianceState = external.usageAccessComplianceState
         )
-        store.setPrimaryReasonByPackage(external.primaryReasonByPackage)
-        if (state.alwaysOnVpnLockdown && FocusVpnService.isPrepared(appContext)) {
+        store.setPrimaryReasonByPackage(state.primaryReasonByPackage)
+        val managedVpnPackage = (state.managedNetworkPolicy as? ManagedNetworkPolicy.ForcedVpn)?.packageName
+        if (
+            managedVpnPackage == appContext.packageName &&
+            FocusVpnService.isPrepared(appContext)
+        ) {
             FocusVpnService.start(appContext)
         }
         FocusLog.i(
@@ -501,10 +660,16 @@ class PolicyEngine(context: Context) {
         val vpnSatisfied = !vpnRequiredForThisApply || isVpnActive()
         val success = applyResult.errors.isEmpty() && verification.passed && vpnSatisfied
         if (success) {
-            store.setDesiredMode(targetMode)
-            store.setEmergencyApps(state.emergencyApps)
+            store.setDesiredMode(normalizedTargetMode)
+            store.setEmergencyApps(
+                if (external.usageAccessComplianceState.lockdownActive) {
+                    emergencyApps
+                } else {
+                    state.emergencyApps
+                }
+            )
             store.setCurrentLockReason(external.lockReason)
-            store.recordApply(state, applyResult, verification, null)
+            store.recordApply(state, applyResult, verification, null, appContext.packageName)
             FocusLog.i(FocusEventId.POLICY_APPLY_DONE, "Apply success mode=${state.mode}")
             return EngineResult(true, "Policy applied", verification, state)
         }
@@ -514,22 +679,37 @@ class PolicyEngine(context: Context) {
             addAll(verification.issues)
             if (!vpnSatisfied) add("VPN not active")
         }.joinToString(" | ")
-        store.recordApply(state, applyResult, verification, errorMessage)
+        store.recordApply(state, applyResult, verification, errorMessage, appContext.packageName)
         FocusLog.w(FocusEventId.MODE_CHANGE_FAIL, "Apply failed mode=$targetMode error=$errorMessage")
+
+        val actualSuspendedAfterApply = PolicyStore.reconcileTrackedPackages(
+            previousPackages = trackedPackages.previouslySuspended,
+            targetPackages = state.suspendTargets,
+            failedAdds = applyResult.failedToSuspend,
+            failedRemovals = applyResult.failedToUnsuspend
+        )
+        val actualUninstallProtectedAfterApply = PolicyStore.reconcileTrackedPackages(
+            previousPackages = trackedPackages.previouslyUninstallProtected,
+            targetPackages = PolicyStore.desiredUninstallProtectedPackages(state, appContext.packageName),
+            failedAdds = applyResult.failedToProtectUninstall,
+            failedRemovals = applyResult.failedToUnprotectUninstall
+        )
 
         val rollbackState = evaluator.evaluate(
             mode = rollbackMode,
             emergencyApps = emergencyApps,
             alwaysAllowedApps = external.policyControls.alwaysAllowedApps,
             alwaysBlockedApps = external.policyControls.alwaysBlockedInstalledPackages,
+            strictInstallBlockedPackages = external.strictInstallBlockedPackages,
             uninstallProtectedApps = external.policyControls.uninstallProtectedApps,
             globalControls = external.policyControls.globalControls,
-            previouslySuspended = trackedPackages.previouslySuspended,
-            previouslyUninstallProtected = trackedPackages.previouslyUninstallProtected,
+            previouslySuspended = actualSuspendedAfterApply,
+            previouslyUninstallProtected = actualUninstallProtectedAfterApply,
             budgetBlockedPackages = external.budgetBlockedPackages,
             primaryReasonByPackage = external.primaryReasonByPackage,
             lockReason = rollbackLockReason,
-            touchGrassBreakActive = external.touchGrassBreakActive
+            touchGrassBreakActive = external.touchGrassBreakActive,
+            usageAccessComplianceState = external.usageAccessComplianceState
         )
         val rollbackApply = applier.apply(rollbackState, hostActivity)
         val rollbackVerify = applier.verify(rollbackState, hostActivity)
@@ -540,7 +720,7 @@ class PolicyEngine(context: Context) {
         }.joinToString(" | ")
         store.setDesiredMode(rollbackMode)
         store.setCurrentLockReason(rollbackLockReason)
-        store.recordApply(rollbackState, rollbackApply, rollbackVerify, rollbackError)
+        store.recordApply(rollbackState, rollbackApply, rollbackVerify, rollbackError, appContext.packageName)
 
         return EngineResult(false, "Policy failed: $errorMessage", verification, state)
     }
@@ -557,6 +737,7 @@ class PolicyEngine(context: Context) {
             emergencyApps = emergencyApps,
             alwaysAllowedApps = external.policyControls.alwaysAllowedApps,
             alwaysBlockedApps = external.policyControls.alwaysBlockedInstalledPackages,
+            strictInstallBlockedPackages = external.strictInstallBlockedPackages,
             uninstallProtectedApps = external.policyControls.uninstallProtectedApps,
             globalControls = external.policyControls.globalControls,
             previouslySuspended = trackedPackages.previouslySuspended,
@@ -564,7 +745,8 @@ class PolicyEngine(context: Context) {
             budgetBlockedPackages = external.budgetBlockedPackages,
             primaryReasonByPackage = external.primaryReasonByPackage,
             lockReason = external.lockReason,
-            touchGrassBreakActive = external.touchGrassBreakActive
+            touchGrassBreakActive = external.touchGrassBreakActive,
+            usageAccessComplianceState = external.usageAccessComplianceState
         )
         return EngineResult(
             success = false,
@@ -590,10 +772,6 @@ class PolicyEngine(context: Context) {
         return caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
     }
 
-    private fun isTouchGrassBreakEnforced(): Boolean {
-        return store.isTouchGrassBreakActive() && store.getDesiredMode() == ModeState.NUCLEAR
-    }
-
     private fun sanitizeTrackedPackages(): TrackedPackages {
         val installedCheck = resolver::isPackageInstalled
         return TrackedPackages(
@@ -610,68 +788,264 @@ class PolicyEngine(context: Context) {
         )
     }
 
+    private fun requestApplyNowLocked(hostActivity: Activity?, reason: String): EngineResult {
+        val overallStartNs = System.nanoTime()
+        FocusLog.d(FocusEventId.POLICY_STATE_COMPUTED, "╔══ PolicyEngine.requestApplyNow() reason=$reason ══")
+        UsageAccessMonitor.refreshNow(
+            context = appContext,
+            reason = "policy_request:$reason",
+            requestPolicyRefreshIfChanged = false
+        )
+        val emergencyApps = getEmergencyApps()
+        val previousMode = store.getDesiredMode()
+        val previousLockReason = store.getCurrentLockReason()
+        val previousScheduleEnforced = store.isScheduleLockEnforced()
+        val previousStrictEnforced = store.isScheduleStrictEnforced()
+        FocusLog.d(FocusEventId.POLICY_STATE_COMPUTED, "║ prevMode=$previousMode prevLockReason=$previousLockReason prevSchedEnforced=$previousScheduleEnforced prevStrict=$previousStrictEnforced")
+
+        if (!isDeviceOwner()) {
+            FocusLog.e(FocusEventId.POLICY_STATE_COMPUTED, "╚══ NOT device owner — aborting ══")
+            return failureResult(
+                message = "Not device owner",
+                stateMode = previousMode,
+                emergencyApps = emergencyApps
+            )
+        }
+
+        val orchestrated = FocusLog.timed(FocusEventId.POLICY_STATE_COMPUTED, "orchestrateCurrentPolicy") {
+            orchestrateCurrentPolicy()
+        }
+        persistComputedState(orchestrated)
+        val external = computeExternalState(orchestrated.nowMs)
+        FocusLog.d(FocusEventId.POLICY_STATE_COMPUTED, "║ effectiveMode=${external.effectiveMode} schedLock=${orchestrated.scheduleDecision.shouldLock} strict=${orchestrated.strictActive}")
+        FocusLog.d(FocusEventId.POLICY_STATE_COMPUTED, "║ suspendTargets=${external.suspendTargets.size} schedBlockedGroups=${external.scheduleBlockedGroupIds.size} budgetBlocked=${external.budgetBlockedPackages.size}")
+        val result = FocusLog.timed(FocusEventId.POLICY_APPLY_START, "applyModeInternal") {
+            applyModeInternal(
+                targetMode = external.effectiveMode,
+                hostActivity = hostActivity,
+                reason = "request:$reason",
+                rollbackMode = previousMode,
+                rollbackLockReason = previousLockReason,
+                emergencyApps = emergencyApps,
+                external = external
+            )
+        }
+        if (result.success) {
+            store.setScheduleEnforced(orchestrated.scheduleDecision.shouldLock)
+            store.setScheduleStrictEnforced(orchestrated.strictActive)
+        } else {
+            store.setScheduleEnforced(previousScheduleEnforced)
+            store.setScheduleStrictEnforced(previousStrictEnforced)
+            FocusLog.w(FocusEventId.POLICY_STATE_COMPUTED, "║ apply FAILED — rolled back schedule state")
+        }
+        syncNextAlarm(
+            nowMs = orchestrated.nowMs,
+            keepOverdueBudgetCheck = shouldRunBudgetEvaluation(nowMs = orchestrated.nowMs)
+        )
+        val totalMs = (System.nanoTime() - overallStartNs) / 1_000_000.0
+        FocusLog.d(FocusEventId.POLICY_STATE_COMPUTED, "╚══ requestApplyNow() DONE in %.1fms success=${result.success} ══".format(totalMs))
+        return result
+    }
+
+    private fun syncNextAlarm(nowMs: Long = System.currentTimeMillis(), keepOverdueBudgetCheck: Boolean = false) {
+        val nextAlarmAt = pickNextAlarmAtMs(
+            nowMs = nowMs,
+            scheduleNextTransitionAtMs = store.getScheduleNextTransitionAtMs(),
+            budgetNextCheckAtMs = store.getBudgetNextCheckAtMs(),
+            touchGrassBreakUntilMs = store.getTouchGrassBreakUntilMs(),
+            keepOverdueBudgetCheck = keepOverdueBudgetCheck
+        )
+        nextAlarmAt?.let(alarmScheduler::scheduleNextTransition) ?: alarmScheduler.cancelNextTransition()
+    }
+
+    private fun orchestrateCurrentPolicy(now: ZonedDateTime = ZonedDateTime.now()): OrchestratedState {
+        val policyControls = loadPolicyControls()
+        val loaded = runBlocking {
+            withContext(Dispatchers.IO) {
+                val budgetDao = db.budgetDao()
+                val scheduleDao = db.scheduleDao()
+                val blocks = scheduleDao.getEnabledBlocks()
+                val blockGroups = scheduleDao.getAllBlockGroups()
+                    .groupBy(ScheduleBlockGroup::blockId, ScheduleBlockGroup::groupId)
+                    .mapValues { it.value.toSet() }
+                LoadedPolicyRows(
+                    groupLimits = budgetDao.getEnabledGroupLimits(),
+                    groupEmergencyConfigs = budgetDao.getAllGroupEmergencyConfigs().associateBy { it.groupId },
+                    appPolicies = budgetDao.getEnabledAppPolicies(),
+                    mappings = budgetDao.getAllMappings(),
+                    scheduleBlocks = blocks,
+                    scheduleBlockGroups = blockGroups,
+                    emergencyStates = budgetOrchestrator.getActiveEmergencyStates(now)
+                )
+            }
+        }
+        val scheduleDecision = ScheduleEvaluator.evaluate(now, loaded.scheduleBlocks, loaded.scheduleBlockGroups)
+        val scheduledTargetIds = scheduleDecision.blockedGroupIds
+        val scheduledGroupIds = scheduledTargetIds.filterTo(linkedSetOf()) { !isSingleAppScheduleTarget(it) }
+        val scheduledAppPackages = scheduledTargetIds.mapNotNullTo(linkedSetOf()) { decodeSingleAppScheduleTarget(it) }
+        val usageSnapshot = runBlocking { budgetOrchestrator.readUsageSnapshot(now) }
+        val groupMembers = loaded.mappings.groupBy(AppGroupMap::groupId) { it.packageName }
+        val groupInputs = loaded.groupLimits.map { limit ->
+            GroupPolicyInput(
+                groupId = limit.groupId,
+                priorityIndex = limit.priorityIndex,
+                strictEnabled = limit.strictEnabled,
+                dailyLimitMs = limit.dailyLimitMs,
+                hourlyLimitMs = limit.hourlyLimitMs,
+                opensPerDay = limit.opensPerDay,
+                members = groupMembers[limit.groupId].orEmpty().toSet(),
+                emergencyConfig = loaded.groupEmergencyConfigs[limit.groupId].toEmergencyConfig(),
+                scheduleBlocked = scheduledGroupIds.contains(limit.groupId)
+            )
+        }
+        val strictActive = resolveStrictScheduleActive(
+            scheduleStrictActive = scheduleDecision.strictActive,
+            groupInputs = groupInputs
+        )
+        val strictInstallBlocked = if (strictActive) {
+            store.getStrictInstallSuspendedPackages()
+        } else {
+            emptySet()
+        }
+        val appInputs = loaded.appPolicies.map { policy ->
+            AppPolicyInput(
+                packageName = policy.packageName,
+                dailyLimitMs = policy.dailyLimitMs,
+                hourlyLimitMs = policy.hourlyLimitMs,
+                opensPerDay = policy.opensPerDay,
+                emergencyConfig = EmergencyConfigInput(
+                    enabled = policy.emergencyEnabled,
+                    unlocksPerDay = policy.unlocksPerDay,
+                    minutesPerUnlock = policy.minutesPerUnlock
+                ),
+                scheduleBlocked = scheduledAppPackages.contains(policy.packageName)
+            )
+        }
+        val emergencyStates = loaded.emergencyStates.map {
+            EmergencyStateInput(
+                targetType = runCatching { EmergencyTargetType.valueOf(it.targetType) }
+                    .getOrDefault(EmergencyTargetType.GROUP),
+                targetId = it.targetId,
+                unlocksUsedToday = it.unlocksUsedToday,
+                activeUntilEpochMs = it.activeUntilEpochMs
+            )
+        }
+        val evaluation = EffectivePolicyEvaluator.evaluate(
+            nowMs = now.toInstant().toEpochMilli(),
+            usageInputs = usageSnapshot.usageInputs,
+            groupPolicies = groupInputs,
+            appPolicies = appInputs,
+            emergencyStates = emergencyStates,
+            strictInstallBlockedPackages = strictInstallBlocked,
+            alwaysAllowedPackages = policyControls.alwaysAllowedApps
+        )
+        return OrchestratedState(
+            nowMs = now.toInstant().toEpochMilli(),
+            usageAccessGranted = usageSnapshot.usageAccessGranted,
+            usageAccessComplianceState = currentUsageAccessComplianceState(usageSnapshot.usageAccessGranted),
+            nextCheckAtMs = usageSnapshot.nextCheckAtMs,
+            scheduleDecision = scheduleDecision,
+            scheduledGroupIds = scheduledGroupIds,
+            policyControls = policyControls,
+            evaluation = evaluation,
+            strictActive = strictActive
+        )
+    }
+
+    private fun persistComputedState(orchestrated: OrchestratedState) {
+        val fullPrimaryReasons = linkedMapOf<String, String>()
+        orchestrated.policyControls.alwaysBlockedInstalledPackages.forEach { fullPrimaryReasons[it] = EffectiveBlockReason.ALWAYS_BLOCKED.name }
+        orchestrated.evaluation.primaryReasonByPackage.forEach { (pkg, reason) ->
+            fullPrimaryReasons.putIfAbsent(pkg, reason)
+        }
+        store.setComputedPolicyState(
+            scheduleLockComputed = orchestrated.scheduleDecision.shouldLock,
+            scheduleStrictComputed = orchestrated.strictActive,
+            scheduleBlockedGroups = orchestrated.scheduledGroupIds,
+            scheduleBlockedPackages = orchestrated.evaluation.scheduledBlockedPackages,
+            scheduleLockReason = orchestrated.scheduleDecision.reason,
+            scheduleNextTransitionAtMs = orchestrated.scheduleDecision.nextTransitionAt?.toInstant()?.toEpochMilli(),
+            budgetBlockedPackages = orchestrated.evaluation.effectiveBlockedPackages,
+            budgetBlockedGroupIds = orchestrated.evaluation.effectiveBlockedGroupIds,
+            budgetReason = orchestrated.usageAccessComplianceState.reason
+                ?: orchestrated.evaluation.usageReasonSummary
+                ?: if (!orchestrated.usageAccessGranted) "Usage access not granted" else null,
+            budgetUsageAccessGranted = orchestrated.usageAccessGranted,
+            budgetNextCheckAtMs = orchestrated.nextCheckAtMs,
+            primaryReasonByPackage = fullPrimaryReasons,
+            clearStrictInstallSuspendedPackages = !orchestrated.strictActive
+        )
+        if (
+            orchestrated.usageAccessComplianceState.lockdownActive &&
+            orchestrated.usageAccessComplianceState.reason?.contains("No Settings package resolved") == true
+        ) {
+            FocusLog.w(
+                appContext,
+                FocusEventId.POLICY_STATE_COMPUTED,
+                "Usage Access recovery lockdown active without resolved Settings or launcher packages"
+            )
+        }
+        FocusLog.i(
+            appContext,
+            FocusEventId.POLICY_STATE_COMPUTED,
+            "scheduleLock=${orchestrated.scheduleDecision.shouldLock} strict=${orchestrated.strictActive} scheduledGroups=${orchestrated.scheduledGroupIds.size} scheduledApps=${orchestrated.evaluation.scheduledBlockedPackages.size} blockedPackages=${orchestrated.evaluation.effectiveBlockedPackages.size} blockedGroups=${orchestrated.evaluation.effectiveBlockedGroupIds.size} usageAccess=${orchestrated.usageAccessGranted}"
+        )
+    }
+
     private fun computeExternalState(nowMs: Long = System.currentTimeMillis()): ExternalState {
         val policyControls = loadPolicyControls()
-        val breakUntil = store.getTouchGrassBreakUntilMs()
-        if (breakUntil != null && breakUntil <= nowMs) {
-            store.setTouchGrassBreakUntilMs(null)
-        }
-        val activeBreakUntil = store.getTouchGrassBreakUntilMs()
-        val touchGrassActive = activeBreakUntil != null && activeBreakUntil > nowMs
+        val usageAccessComplianceState = currentUsageAccessComplianceState()
         val scheduleComputed = store.isScheduleLockComputed()
-        val scheduleBlockedGroups = store.getScheduleBlockedGroups()
         val strictActive = store.isScheduleStrictComputed()
         val strictInstallBlocked = if (strictActive) {
             store.getStrictInstallSuspendedPackages()
         } else {
             emptySet()
         }
-        val budgetBlocked = combinedBlockedPackages(
+        val budgetBlocked = store.getBudgetBlockedPackages()
+        val primaryReason = store.getPrimaryReasonByPackage().ifEmpty { computePrimaryReasonByPackage(
             alwaysBlocked = policyControls.alwaysBlockedInstalledPackages,
-            budgetBlocked = store.getBudgetBlockedPackages(),
+            budgetBlocked = budgetBlocked,
             scheduleBlocked = store.getScheduleBlockedPackages(),
             strictInstallBlocked = strictInstallBlocked
-        )
-        val primaryReason = computePrimaryReasonByPackage(
-            alwaysBlocked = policyControls.alwaysBlockedInstalledPackages,
-            budgetBlocked = store.getBudgetBlockedPackages(),
-            scheduleBlocked = store.getScheduleBlockedPackages(),
-            strictInstallBlocked = strictInstallBlocked
-        )
+        ) }
         val effectiveMode = resolveEffectiveMode(
             manualMode = store.getManualMode(),
             scheduleComputed = scheduleComputed,
-            touchGrassBreakUntilMs = activeBreakUntil,
+            touchGrassBreakUntilMs = null,
             nowMs = nowMs
         )
         val lockReason = when {
-            scheduleComputed -> store.getScheduleLockReason() ?: "Scheduled lock active"
-            scheduleBlockedGroups.isNotEmpty() -> store.getScheduleLockReason() ?: "Scheduled group block active"
-            touchGrassActive -> {
-                val untilText = DateFormat.getDateTimeInstance().format(Date(activeBreakUntil!!))
-                "Touch Grass break until $untilText"
-            }
-            effectiveMode == ModeState.NUCLEAR -> "Manual Nuclear mode"
-            budgetBlocked.isNotEmpty() -> store.getBudgetReason() ?: "Budget limits exceeded"
+            usageAccessComplianceState.lockdownActive -> usageAccessComplianceState.reason
+            scheduleComputed && store.getScheduleBlockedPackages().isNotEmpty() ->
+                store.getScheduleLockReason() ?: "Scheduled group block active"
+            strictActive -> store.getScheduleLockReason() ?: "Strict group schedule active"
+            store.getScheduleBlockedPackages().isNotEmpty() ->
+                store.getScheduleLockReason() ?: "Scheduled group block active"
+            budgetBlocked.isNotEmpty() -> store.getBudgetReason() ?: "Policy limits exceeded"
             else -> null
         }
         return ExternalState(
             effectiveMode = effectiveMode,
             budgetBlockedPackages = budgetBlocked,
-            touchGrassBreakActive = touchGrassActive,
+            strictInstallBlockedPackages = strictInstallBlocked,
+            touchGrassBreakActive = false,
             lockReason = lockReason,
             policyControls = policyControls,
-            primaryReasonByPackage = primaryReason
+            primaryReasonByPackage = primaryReason,
+            usageAccessComplianceState = usageAccessComplianceState
         )
     }
 
     private data class ExternalState(
         val effectiveMode: ModeState,
         val budgetBlockedPackages: Set<String>,
+        val strictInstallBlockedPackages: Set<String>,
         val touchGrassBreakActive: Boolean,
         val lockReason: String?,
         val policyControls: PolicyControls,
-        val primaryReasonByPackage: Map<String, String>
+        val primaryReasonByPackage: Map<String, String>,
+        val usageAccessComplianceState: UsageAccessComplianceState
     )
 
     private data class TrackedPackages(
@@ -687,15 +1061,46 @@ class PolicyEngine(context: Context) {
         val uninstallProtectedApps: Set<String>
     )
 
-    private fun loadPolicyControls(): PolicyControls = runBlocking {
-        withContext(Dispatchers.IO) {
+    private data class LoadedPolicyRows(
+        val groupLimits: List<GroupLimit>,
+        val groupEmergencyConfigs: Map<String, GroupEmergencyConfig>,
+        val appPolicies: List<AppPolicy>,
+        val mappings: List<AppGroupMap>,
+        val scheduleBlocks: List<com.ankit.destination.data.ScheduleBlock>,
+        val scheduleBlockGroups: Map<Long, Set<String>>,
+        val emergencyStates: List<EmergencyState>
+    )
+
+    private data class OrchestratedState(
+        val nowMs: Long,
+        val usageAccessGranted: Boolean,
+        val usageAccessComplianceState: UsageAccessComplianceState,
+        val nextCheckAtMs: Long?,
+        val scheduleDecision: ScheduleDecision,
+        val scheduledGroupIds: Set<String>,
+        val policyControls: PolicyControls,
+        val evaluation: EffectivePolicyEvaluation,
+        val strictActive: Boolean
+    )
+
+    private fun loadPolicyControls(): PolicyControls = runBlocking { loadPolicyControlsAsync() }
+
+    private suspend fun loadPolicyControlsAsync(): PolicyControls {
+        policyControlsCache?.let { return it }
+        val loaded = withContext(Dispatchers.IO) {
             val dao = db.budgetDao()
             val global = dao.getGlobalControls() ?: GlobalControls()
-            val alwaysAllowed = dao.getAlwaysAllowedPackages().toSet()
-            val alwaysBlocked = dao.getAlwaysBlockedPackages().toSet()
-            val uninstallProtected = dao.getUninstallProtectedPackages().toMutableSet().apply {
-                add(appContext.packageName)
-            }.toSet()
+            val alwaysAllowed = normalizeConfiguredPackages(
+                packages = dao.getAlwaysAllowedPackages(),
+                implicitPackages = setOf(appContext.packageName)
+            )
+            val alwaysBlocked = normalizeConfiguredPackages(dao.getAlwaysBlockedPackages())
+                .filterNot(alwaysAllowed::contains)
+                .toCollection(linkedSetOf())
+            val uninstallProtected = normalizeConfiguredPackages(
+                packages = dao.getUninstallProtectedPackages(),
+                implicitPackages = setOf(appContext.packageName)
+            )
             val installedAlwaysBlocked = alwaysBlocked.filterTo(linkedSetOf()) { resolver.isPackageInstalled(it) }
             PolicyControls(
                 globalControls = global,
@@ -705,6 +1110,20 @@ class PolicyEngine(context: Context) {
                 uninstallProtectedApps = uninstallProtected
             )
         }
+        policyControlsCache = loaded
+        return loaded
+    }
+
+    private fun invalidatePolicyControlsCache() {
+        policyControlsCache = null
+    }
+
+    private fun GroupEmergencyConfig?.toEmergencyConfig(): EmergencyConfigInput {
+        return EmergencyConfigInput(
+            enabled = this?.enabled == true,
+            unlocksPerDay = this?.unlocksPerDay ?: 0,
+            minutesPerUnlock = this?.minutesPerUnlock ?: 0
+        )
     }
 
 
@@ -735,6 +1154,46 @@ class PolicyEngine(context: Context) {
             }
         }
 
+        internal fun normalizeConfiguredPackages(
+            packages: Iterable<String>,
+            implicitPackages: Set<String> = emptySet()
+        ): Set<String> = buildSet {
+            packages.asSequence()
+                .map(String::trim)
+                .filter(String::isNotBlank)
+                .forEach(::add)
+            implicitPackages.asSequence()
+                .map(String::trim)
+                .filter(String::isNotBlank)
+                .forEach(::add)
+        }
+
+        internal fun isUsageAccessLockdownEligible(
+            deviceOwnerActive: Boolean,
+            provisioningFinalizationState: String?,
+            hasSuccessfulPolicyApply: Boolean,
+            hasAnyPriorApply: Boolean = hasSuccessfulPolicyApply
+        ): Boolean {
+            if (!deviceOwnerActive) return false
+            return when (provisioningFinalizationState) {
+                ProvisioningCoordinator.FinalizationState.SUCCESS.name -> true
+                null -> hasSuccessfulPolicyApply
+                else -> hasAnyPriorApply
+            }
+        }
+
+        internal fun shouldEnforceVpnLockdown(
+            globalControls: GlobalControls,
+            controllerPackageName: String,
+            featureEnabled: Boolean = FocusConfig.enforceAlwaysOnVpnLockdown
+        ): Boolean {
+            if (!featureEnabled) return false
+            return when (val policy = globalControls.toManagedNetworkPolicy(controllerPackageName)) {
+                is ManagedNetworkPolicy.ForcedVpn -> policy.lockdown
+                else -> false
+            }
+        }
+
         internal fun combinedBlockedPackages(
             alwaysBlocked: Set<String>,
             budgetBlocked: Set<String>,
@@ -761,9 +1220,36 @@ class PolicyEngine(context: Context) {
             return ordered
         }
 
+        internal fun resolveStrictScheduleActive(
+            scheduleStrictActive: Boolean,
+            groupInputs: List<GroupPolicyInput>
+        ): Boolean {
+            return scheduleStrictActive || groupInputs.any { it.scheduleBlocked && it.strictEnabled }
+        }
+
         fun isBudgetEvaluationDue(nowMs: Long, nextCheckAtMs: Long?, graceMs: Long = 15_000L): Boolean {
             val nextCheckAt = nextCheckAtMs ?: return true
             return nowMs + graceMs >= nextCheckAt
+        }
+
+        internal fun pickNextAlarmAtMs(
+            nowMs: Long,
+            scheduleNextTransitionAtMs: Long?,
+            budgetNextCheckAtMs: Long?,
+            touchGrassBreakUntilMs: Long?,
+            keepOverdueBudgetCheck: Boolean = false
+        ): Long? {
+            val normalizedBudgetCheck = when {
+                budgetNextCheckAtMs == null -> null
+                budgetNextCheckAtMs > nowMs -> budgetNextCheckAtMs
+                keepOverdueBudgetCheck -> nowMs + 1L
+                else -> null
+            }
+            return listOfNotNull(
+                scheduleNextTransitionAtMs,
+                normalizedBudgetCheck,
+                touchGrassBreakUntilMs
+            ).filter { it > nowMs }.minOrNull()
         }
 
         fun resolveEffectiveMode(
@@ -772,12 +1258,23 @@ class PolicyEngine(context: Context) {
             touchGrassBreakUntilMs: Long?,
             nowMs: Long
         ): ModeState {
-            if (scheduleComputed) return ModeState.NUCLEAR
-            if (touchGrassBreakUntilMs != null && touchGrassBreakUntilMs > nowMs) return ModeState.NUCLEAR
-            return manualMode
+            return ModeState.NORMAL
+        }
+
+        internal fun encodeSingleAppScheduleTarget(packageName: String): String = "app:$packageName"
+
+        internal fun decodeSingleAppScheduleTarget(targetId: String): String? {
+            val trimmed = targetId.trim()
+            return if (trimmed.startsWith("app:") && trimmed.length > 4) trimmed.removePrefix("app:") else null
+        }
+
+        internal fun isSingleAppScheduleTarget(targetId: String): Boolean {
+            return decodeSingleAppScheduleTarget(targetId) != null
         }
     }
 }
+
+
 
 
 

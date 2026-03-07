@@ -1,7 +1,6 @@
 package com.ankit.destination.policy
 
 import com.ankit.destination.data.GlobalControls
-
 enum class ModeState {
     NORMAL,
     NUCLEAR
@@ -10,6 +9,14 @@ enum class ModeState {
 data class AllowlistResolution(
     val packages: Set<String>,
     val reasons: Map<String, String>
+)
+
+data class UsageAccessComplianceState(
+    val usageAccessGranted: Boolean,
+    val lockdownEligible: Boolean,
+    val lockdownActive: Boolean,
+    val recoveryAllowlist: Set<String>,
+    val reason: String?
 )
 
 data class PolicyState(
@@ -28,7 +35,7 @@ data class PolicyState(
     val emergencyApps: Set<String>,
     val allowlistReasons: Map<String, String>,
     val vpnRequired: Boolean,
-    val alwaysOnVpnLockdown: Boolean,
+    val managedNetworkPolicy: ManagedNetworkPolicy = ManagedNetworkPolicy.Unmanaged,
     val lockReason: String?,
     val budgetBlockedPackages: Set<String>,
     val touchGrassBreakActive: Boolean,
@@ -63,6 +70,11 @@ data class DiagnosticsSnapshot(
     val deviceOwner: Boolean,
     val desiredMode: ModeState,
     val manualMode: ModeState,
+    val usageAccessGranted: Boolean,
+    val usageAccessRecoveryLockdownActive: Boolean,
+    val usageAccessRecoveryAllowlist: Set<String>,
+    val usageAccessRecoveryReason: String?,
+    val lastUsageAccessCheckAtMs: Long,
     val scheduleLockComputed: Boolean,
     val scheduleLockActive: Boolean,
     val scheduleStrictComputed: Boolean,
@@ -83,7 +95,8 @@ data class DiagnosticsSnapshot(
     val touchGrassBreakMinutes: Int,
     val lockTaskPackages: Set<String>,
     val lockTaskFeatures: Int?,
-    val statusBarDisabled: Boolean?,
+    val statusBarDisabledObserved: Boolean?,
+    val statusBarDisabledExpected: Boolean,
     val lastAppliedAtMs: Long,
     val lastVerificationPassed: Boolean,
     val lastError: String?,
@@ -95,6 +108,12 @@ data class DiagnosticsSnapshot(
     val vpnLastError: String?,
     val alwaysOnVpnPackage: String?,
     val alwaysOnVpnLockdown: Boolean?,
+    val privateDnsMode: Int?,
+    val privateDnsHost: String?,
+    val managedNetworkMode: String,
+    val managedVpnPackage: String?,
+    val managedVpnLockdown: Boolean?,
+    val managedPrivateDnsHost: String?,
     val domainRuleCount: Int,
     val currentLockReason: String?,
     val emergencyApps: Set<String>,

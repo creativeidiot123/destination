@@ -24,6 +24,7 @@ class ProvisioningComplianceActivity : AppCompatActivity() {
     private lateinit var content: TextView
     private lateinit var primaryButton: Button
     private lateinit var refreshButton: Button
+    private lateinit var usageAccessButton: Button
     private lateinit var coordinator: ProvisioningCoordinator
     private var latestResult: ProvisioningCoordinator.FinalizationResult? = null
     private var finalizationInFlight: Boolean = false
@@ -36,6 +37,9 @@ class ProvisioningComplianceActivity : AppCompatActivity() {
         setContentView(buildContentView())
         primaryButton.setOnClickListener { handlePrimaryAction() }
         refreshButton.setOnClickListener { finalizeProvisioning() }
+        usageAccessButton.setOnClickListener {
+            startActivity(Intent(this, UsageAccessGuideActivity::class.java))
+        }
         finalizeProvisioning()
     }
 
@@ -77,6 +81,7 @@ class ProvisioningComplianceActivity : AppCompatActivity() {
             }
             appendLine("Admin active: ${snapshot.adminActive}")
             appendLine("Device Owner active: ${snapshot.deviceOwnerActive}")
+            appendLine("Usage Access granted: ${snapshot.usageAccessGranted}")
             appendLine("Admin component: ${snapshot.adminComponent}")
             appendLine()
             appendLine("QR config ready: ${snapshot.qrValidation.isReady}")
@@ -113,6 +118,7 @@ class ProvisioningComplianceActivity : AppCompatActivity() {
             else -> !finalizationInFlight
         }
         refreshButton.isEnabled = !finalizationInFlight
+        usageAccessButton.isEnabled = !finalizationInFlight
     }
 
     private fun handlePrimaryAction() {
@@ -152,21 +158,35 @@ class ProvisioningComplianceActivity : AppCompatActivity() {
         refreshButton = Button(this).apply {
             text = getString(R.string.refresh)
         }
+        usageAccessButton = Button(this).apply {
+            text = "Open Usage Access"
+        }
         content = TextView(this).apply {
             setTextIsSelectable(true)
             typeface = android.graphics.Typeface.MONOSPACE
         }
         val actions = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
+            orientation = LinearLayout.VERTICAL
             addView(
                 primaryButton,
-                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
             )
             addView(
                 refreshButton,
-                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                    marginStart = spacing
-                }
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = spacing }
+            )
+            addView(
+                usageAccessButton,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = spacing }
             )
         }
         val scroll = ScrollView(this).apply {

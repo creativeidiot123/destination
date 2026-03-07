@@ -29,6 +29,10 @@ class DevicePolicyFacade(private val context: Context) {
 
     fun isDeviceOwner(): Boolean = dpm.isDeviceOwnerApp(packageName)
 
+    fun clearDeviceOwnerApp() {
+        dpm.clearDeviceOwnerApp(packageName)
+    }
+
     fun setLockTaskPackages(packages: List<String>) {
         dpm.setLockTaskPackages(adminComponent, packages.toTypedArray())
     }
@@ -75,6 +79,40 @@ class DevicePolicyFacade(private val context: Context) {
         }
     }
 
+    fun getGlobalPrivateDnsMode(): Int? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            dpm.getGlobalPrivateDnsMode(adminComponent)
+        } else {
+            null
+        }
+    }
+
+    fun getGlobalPrivateDnsHost(): String? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            dpm.getGlobalPrivateDnsHost(adminComponent)
+        } else {
+            null
+        }
+    }
+
+    fun supportsGlobalPrivateDns(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+
+    fun setGlobalPrivateDnsModeOpportunistic(): Int? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            dpm.setGlobalPrivateDnsModeOpportunistic(adminComponent)
+        } else {
+            null
+        }
+    }
+
+    fun setGlobalPrivateDnsModeSpecifiedHost(host: String): Int? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            dpm.setGlobalPrivateDnsModeSpecifiedHost(adminComponent, host)
+        } else {
+            null
+        }
+    }
+
     fun setPackagesSuspended(packages: List<String>, suspended: Boolean): PackageSuspendResult {
         if (packages.isEmpty()) {
             return PackageSuspendResult(
@@ -112,6 +150,24 @@ class DevicePolicyFacade(private val context: Context) {
 
     fun isUninstallBlocked(packageName: String): Boolean {
         return dpm.isUninstallBlocked(adminComponent, packageName)
+    }
+
+    fun supportsUserControlDisabledPackages(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+
+    fun setUserControlDisabledPackages(packages: List<String>) {
+        if (!supportsUserControlDisabledPackages()) return
+        val normalizedPackages = packages.asSequence()
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .distinct()
+            .sorted()
+            .toList()
+        dpm.setUserControlDisabledPackages(adminComponent, normalizedPackages)
+    }
+
+    fun getUserControlDisabledPackages(): Set<String> {
+        if (!supportsUserControlDisabledPackages()) return emptySet()
+        return dpm.getUserControlDisabledPackages(adminComponent).toSet()
     }
 
     fun addUserRestriction(restriction: String) {
@@ -167,8 +223,18 @@ class DevicePolicyFacade(private val context: Context) {
         }
     }
 
-    private companion object {
+    companion object {
         private const val SUSPEND_CHUNK_SIZE = 200
+
+        fun privateDnsModeLabel(mode: Int?): String {
+            return when (mode) {
+                null -> "n/a"
+                DevicePolicyManager.PRIVATE_DNS_MODE_OFF -> "off"
+                DevicePolicyManager.PRIVATE_DNS_MODE_OPPORTUNISTIC -> "opportunistic"
+                DevicePolicyManager.PRIVATE_DNS_MODE_PROVIDER_HOSTNAME -> "provider-hostname"
+                else -> "unknown($mode)"
+            }
+        }
     }
 }
 

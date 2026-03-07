@@ -42,16 +42,35 @@ object UsageBudgetEvaluator {
         val blocked = linkedSetOf<String>()
         val reasons = mutableListOf<String>()
 
-        val appLimitMap = appLimits.associateBy { it.packageName }
+        val appLimitMap = linkedMapOf<String, Long>()
+        appLimits.forEach { limit ->
+            val packageName = limit.packageName.trim()
+            if (packageName.isBlank()) return@forEach
+            if (limit.dailyLimitMs <= 0L) {
+                reasons += "App $packageName: invalid daily limit (${limit.dailyLimitMs})"
+                return@forEach
+            }
+            appLimitMap[packageName] = limit.dailyLimitMs
+        }
         usedTodayMs.forEach { (pkg, usedMs) ->
             val limit = appLimitMap[pkg] ?: return@forEach
-            if (usedMs >= limit.dailyLimitMs) {
+            if (usedMs >= limit) {
                 blocked += pkg
                 reasons += "App limit reached: $pkg"
             }
         }
 
-        val membersByGroup = appGroups.groupBy(keySelector = { it.groupId }, valueTransform = { it.packageName })
+        val canonicalGroupsByPackage = linkedMapOf<String, String>()
+        appGroups.forEach { mapping ->
+            val packageName = mapping.packageName.trim()
+            val groupId = mapping.groupId.trim()
+            if (packageName.isBlank() || groupId.isBlank()) return@forEach
+            canonicalGroupsByPackage[packageName] = groupId
+        }
+        val membersByGroup = canonicalGroupsByPackage.entries.groupBy(
+            keySelector = { it.value },
+            valueTransform = { it.key }
+        )
         val groupStates = groupLimits.map { limit ->
             GroupState(
                 limits = GroupLimits(

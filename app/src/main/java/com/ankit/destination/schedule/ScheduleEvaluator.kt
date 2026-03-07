@@ -2,6 +2,8 @@ package com.ankit.destination.schedule
 
 import com.ankit.destination.data.ScheduleBlock
 import com.ankit.destination.data.ScheduleBlockKind
+import com.ankit.destination.policy.FocusEventId
+import com.ankit.destination.policy.FocusLog
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -25,29 +27,40 @@ object ScheduleEvaluator {
         blocks: List<ScheduleBlock>,
         blockGroups: Map<Long, Set<String>> = emptyMap()
     ): ScheduleDecision {
-        val enabled = blocks.filter { it.enabled }
+        val enabled = blocks.filter { it.enabled && it.kind == ScheduleBlockKind.GROUPS.name }
+        FocusLog.d(FocusEventId.SCHEDULE_EVAL, "┌── ScheduleEvaluator.evaluate() total=${blocks.size} enabled=${enabled.size}")
         if (enabled.isEmpty()) {
+            FocusLog.d(FocusEventId.SCHEDULE_EVAL, "└── No enabled group schedules")
             return ScheduleDecision(false, false, emptySet(), "No schedules", emptySet(), null)
         }
 
         val active = enabled.filter { isActive(it, now) }
-        val activeNuclear = active.filter { it.kind == ScheduleBlockKind.NUCLEAR.name }
-        val activeGroups = active.filter { it.kind == ScheduleBlockKind.GROUPS.name }
-        val shouldLock = activeNuclear.isNotEmpty()
-        val strictActive = activeGroups.any { it.strict }
-        val blockedGroupIds = activeGroups.flatMap { blockGroups[it.id].orEmpty() }.toSet()
-        val reason = if (shouldLock) {
-            val names = activeNuclear.joinToString(", ") { it.name }
-            "Locked by schedule: $names"
-        } else if (blockedGroupIds.isNotEmpty()) {
-            val names = activeGroups.joinToString(", ") { it.name }
-            "Group schedule active: $names"
+        val strictActive = active.any { it.strict }
+        val blockedGroupIds = active.flatMap { blockGroups[it.id].orEmpty() }.toSet()
+        val activeNames = active.joinToString(", ") { it.name }
+        val reason = if (strictActive) {
+            "Strict group schedule active: $activeNames"
+        } else if (active.isNotEmpty()) {
+            "Group schedule active: $activeNames"
         } else {
             "Outside scheduled blocks"
         }
         val next = computeNextTransition(now, enabled)
+
+        FocusLog.d(FocusEventId.SCHEDULE_EVAL, "│ active=${active.size} strict=$strictActive blockedGroups=${blockedGroupIds.size}")
+        if (active.isNotEmpty()) {
+            active.forEach { block ->
+                val groups = blockGroups[block.id].orEmpty()
+                FocusLog.d(FocusEventId.SCHEDULE_EVAL, "│   active block: id=${block.id} name=${block.name} strict=${block.strict} start=${block.startMinute} end=${block.endMinute} groups=${groups.joinToString(",")}")
+            }
+        }
+        if (blockedGroupIds.isNotEmpty()) {
+            FocusLog.d(FocusEventId.SCHEDULE_EVAL, "│ blockedGroupIds: ${blockedGroupIds.joinToString(",")}")
+        }
+        FocusLog.d(FocusEventId.SCHEDULE_EVAL, "└── nextTransition=${next} reason=$reason")
+
         return ScheduleDecision(
-            shouldLock = shouldLock,
+            shouldLock = false,
             strictActive = strictActive,
             blockedGroupIds = blockedGroupIds,
             reason = reason,
@@ -58,6 +71,7 @@ object ScheduleEvaluator {
 
     fun isActive(block: ScheduleBlock, now: ZonedDateTime): Boolean {
         if (!block.enabled) return false
+        if (!hasValidWindow(block)) return false
         val minute = now.toLocalTime().toSecondOfDay() / 60
         val todayBit = dayToBit(now.dayOfWeek)
 
@@ -71,7 +85,7 @@ object ScheduleEvaluator {
     }
 
     fun computeNextTransition(now: ZonedDateTime, blocks: List<ScheduleBlock>): ZonedDateTime? {
-        val enabled = blocks.filter { it.enabled }
+        val enabled = blocks.filter { it.enabled && hasValidWindow(it) }
         if (enabled.isEmpty()) return null
 
         val zone = now.zone
@@ -120,5 +134,12 @@ object ScheduleEvaluator {
     fun dayToBit(day: DayOfWeek): Int {
         val idx = (day.value + 6) % 7
         return 1 shl idx
+    }
+
+    private fun hasValidWindow(block: ScheduleBlock): Boolean {
+        return block.daysMask != 0 &&
+            block.startMinute in 0..1439 &&
+            block.endMinute in 0..1439 &&
+            block.startMinute != block.endMinute
     }
 }

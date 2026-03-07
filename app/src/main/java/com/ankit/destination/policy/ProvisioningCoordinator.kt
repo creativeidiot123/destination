@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.PersistableBundle
+import com.ankit.destination.usage.UsageAccess
+import com.ankit.destination.usage.UsageAccessMonitor
 
 class ProvisioningCoordinator(context: Context) {
     private val appContext = context.applicationContext
@@ -21,6 +23,7 @@ class ProvisioningCoordinator(context: Context) {
         val adminComponent: String,
         val adminActive: Boolean,
         val deviceOwnerActive: Boolean,
+        val usageAccessGranted: Boolean,
         val qrValidation: ProvisioningConfig.ValidationResult,
         val lastSignalAction: String?,
         val lastSignalAtMs: Long?,
@@ -50,6 +53,7 @@ class ProvisioningCoordinator(context: Context) {
             adminComponent = adminComponent,
             adminActive = facade.isAdminActive(),
             deviceOwnerActive = facade.isDeviceOwner(),
+            usageAccessGranted = UsageAccess.hasUsageAccess(appContext),
             qrValidation = ProvisioningConfig.validateQrProvisioning(adminComponent),
             lastSignalAction = store.getProvisioningSignalAction(),
             lastSignalAtMs = store.getProvisioningSignalAtMs(),
@@ -79,9 +83,16 @@ class ProvisioningCoordinator(context: Context) {
     }
 
     fun finalizeProvisioning(trigger: String, adminExtras: PersistableBundle?): FinalizationResult {
+        UsageAccessMonitor.refreshNow(
+            context = appContext,
+            reason = "provisioning_finalize",
+            requestPolicyRefreshIfChanged = false
+        )
         recordProvisioningSignal(trigger, adminExtras)
-        if (!facade.isDeviceOwner()) {
-            val message = "Device owner not active yet; continue setup to finish enrollment."
+        provisioningPendingReason(
+            isDeviceOwner = facade.isDeviceOwner(),
+            usageAccessGranted = UsageAccess.hasUsageAccess(appContext)
+        )?.let { message ->
             store.recordProvisioningFinalization(FinalizationState.PENDING.name, message)
             return FinalizationResult(FinalizationState.PENDING, message)
         }
@@ -138,5 +149,16 @@ class ProvisioningCoordinator(context: Context) {
                 intent.getParcelableExtra(ProvisioningConfig.extraProvisioningAdminExtrasBundle)
             }
         }
+    }
+}
+
+internal fun provisioningPendingReason(
+    isDeviceOwner: Boolean,
+    usageAccessGranted: Boolean
+): String? {
+    return when {
+        !isDeviceOwner -> "Device owner not active yet; continue setup to finish enrollment."
+        !usageAccessGranted -> "Grant Usage Access to Destination before finishing enrollment."
+        else -> null
     }
 }

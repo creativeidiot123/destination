@@ -1,0 +1,335 @@
+package com.ankit.destination
+
+import com.ankit.destination.data.GlobalControls
+import com.ankit.destination.data.ManagedNetworkModeSetting
+import com.ankit.destination.policy.ModeState
+import com.ankit.destination.policy.ManagedNetworkPolicy
+import com.ankit.destination.policy.PackageResolver
+import com.ankit.destination.policy.PolicyEngine
+import com.ankit.destination.policy.PolicyEvaluator
+import com.ankit.destination.policy.PolicyRestrictions
+import com.ankit.destination.policy.PolicyState
+import com.ankit.destination.policy.PolicyStore
+import com.ankit.destination.usage.UsageAccessMonitor
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class AdminPolicyLogicTest {
+
+    @Test
+    fun normalizeConfiguredPackages_trimsAndKeepsImplicitPackagesOnce() {
+        val normalized = PolicyEngine.normalizeConfiguredPackages(
+            packages = listOf("  com.example.alpha  ", "", "com.example.alpha", "   "),
+            implicitPackages = setOf("com.ankit.destination", "com.example.alpha")
+        )
+
+        assertEquals(
+            setOf("com.example.alpha", "com.ankit.destination"),
+            normalized
+        )
+    }
+
+    @Test
+    fun desiredUninstallProtectedPackages_alwaysKeepsControllerWhenSelfProtectionEnabled() {
+        val state = PolicyState(
+            mode = ModeState.NORMAL,
+            lockTaskAllowlist = emptySet(),
+            lockTaskFeatures = 0,
+            statusBarDisabled = false,
+            suspendTargets = emptySet(),
+            previouslySuspended = emptySet(),
+            uninstallProtectedPackages = setOf("com.example.target"),
+            previouslyUninstallProtectedPackages = emptySet(),
+            restrictions = emptySet(),
+            enforceRestrictions = false,
+            blockSelfUninstall = true,
+            requireAutoTime = false,
+            emergencyApps = emptySet(),
+            allowlistReasons = emptyMap(),
+            vpnRequired = false,
+            managedNetworkPolicy = ManagedNetworkPolicy.Unmanaged,
+            lockReason = null,
+            budgetBlockedPackages = emptySet(),
+            touchGrassBreakActive = false,
+            primaryReasonByPackage = emptyMap(),
+            globalControls = GlobalControls()
+        )
+
+        assertEquals(
+            setOf("com.example.target", "com.ankit.destination"),
+            PolicyStore.desiredUninstallProtectedPackages(state, "com.ankit.destination")
+        )
+    }
+
+    @Test
+    fun mergeSuspendTargets_includesStrictInstallPackages_inNormalMode() {
+        val merged = PolicyEvaluator.mergeSuspendTargets(
+            effectiveMode = ModeState.NORMAL,
+            nuclearSuspendTargets = setOf("nuclearOnly"),
+            budgetBlockedSuspendable = setOf("budget"),
+            alwaysBlockedSuspendable = setOf("always"),
+            strictInstallSuspendable = setOf("fresh.install")
+        )
+
+        assertEquals(setOf("budget", "always", "fresh.install"), merged)
+    }
+
+    @Test
+    fun mergeSuspendTargets_includesStrictInstallPackages_inNuclearMode() {
+        val merged = PolicyEvaluator.mergeSuspendTargets(
+            effectiveMode = ModeState.NUCLEAR,
+            nuclearSuspendTargets = setOf("nuclearOnly"),
+            budgetBlockedSuspendable = setOf("budget"),
+            alwaysBlockedSuspendable = setOf("always"),
+            strictInstallSuspendable = setOf("fresh.install")
+        )
+
+        assertEquals(setOf("nuclearOnly", "budget", "always", "fresh.install"), merged)
+    }
+
+    @Test
+    fun reconcileTrackedPackages_usesActualPostApplyState_afterPartialFailures() {
+        assertEquals(
+            setOf("keep", "new", "stuck"),
+            PolicyStore.reconcileTrackedPackages(
+                previousPackages = setOf("keep", "remove", "stuck"),
+                targetPackages = setOf("keep", "new"),
+                failedAdds = emptySet(),
+                failedRemovals = setOf("stuck")
+            )
+        )
+    }
+
+    @Test
+    fun globalControls_skipUnsupportedRestrictionsOnOlderSdk() {
+        val restrictions = PolicyRestrictions.build(
+            mode = ModeState.NORMAL,
+            globalControls = GlobalControls(
+                lockTime = true,
+                lockWorkProfile = true,
+                lockCloningBestEffort = true
+            ),
+            sdkInt = 26
+        )
+
+        assertFalse(restrictions.contains(android.os.UserManager.DISALLOW_CONFIG_DATE_TIME))
+        assertTrue(restrictions.contains(android.os.UserManager.DISALLOW_ADD_MANAGED_PROFILE))
+        assertFalse(restrictions.contains(PolicyRestrictions.NO_ADD_CLONE_PROFILE))
+        assertFalse(restrictions.contains(PolicyRestrictions.NO_ADD_PRIVATE_PROFILE))
+    }
+
+    @Test
+    fun globalControls_includeBestEffortRestrictionsOnlyWhenSupported() {
+        val cloneOnly = PolicyRestrictions.build(
+            mode = ModeState.NORMAL,
+            globalControls = GlobalControls(lockCloningBestEffort = true),
+            sdkInt = 34
+        )
+        val cloneAndPrivate = PolicyRestrictions.build(
+            mode = ModeState.NORMAL,
+            globalControls = GlobalControls(lockCloningBestEffort = true),
+            sdkInt = 35
+        )
+
+        assertTrue(cloneOnly.contains(PolicyRestrictions.NO_ADD_CLONE_PROFILE))
+        assertFalse(cloneOnly.contains(PolicyRestrictions.NO_ADD_PRIVATE_PROFILE))
+        assertTrue(cloneAndPrivate.contains(PolicyRestrictions.NO_ADD_CLONE_PROFILE))
+        assertTrue(cloneAndPrivate.contains(PolicyRestrictions.NO_ADD_PRIVATE_PROFILE))
+    }
+
+    @Test
+    fun globalControls_includeSafeBootRestriction_onlyWhenSupported() {
+        val unsupported = PolicyRestrictions.build(
+            mode = ModeState.NORMAL,
+            globalControls = GlobalControls(disableSafeMode = true),
+            sdkInt = 25
+        )
+        val supported = PolicyRestrictions.build(
+            mode = ModeState.NORMAL,
+            globalControls = GlobalControls(disableSafeMode = true),
+            sdkInt = 26
+        )
+
+        assertFalse(unsupported.contains(android.os.UserManager.DISALLOW_SAFE_BOOT))
+        assertTrue(supported.contains(android.os.UserManager.DISALLOW_SAFE_BOOT))
+    }
+
+    @Test
+    fun managedRestrictions_doNotTrackUnsupportedBestEffortRestrictions() {
+        val managed = PolicyRestrictions.managed(emptySet(), sdkInt = 33)
+
+        assertFalse(managed.contains(PolicyRestrictions.NO_ADD_CLONE_PROFILE))
+        assertFalse(managed.contains(PolicyRestrictions.NO_ADD_PRIVATE_PROFILE))
+    }
+
+    @Test
+    fun shouldEnforceVpnLockdown_requiresForcedVpnModeAndFeatureFlag() {
+        assertTrue(
+            PolicyEngine.shouldEnforceVpnLockdown(
+                globalControls = GlobalControls(
+                    managedNetworkMode = ManagedNetworkModeSetting.FORCED_VPN.name,
+                    managedVpnPackage = "com.example.vpn",
+                    managedVpnLockdown = true
+                ),
+                controllerPackageName = "com.ankit.destination",
+                featureEnabled = true
+            )
+        )
+        assertFalse(
+            PolicyEngine.shouldEnforceVpnLockdown(
+                globalControls = GlobalControls(
+                    managedNetworkMode = ManagedNetworkModeSetting.UNMANAGED.name
+                ),
+                controllerPackageName = "com.ankit.destination",
+                featureEnabled = true
+            )
+        )
+        assertFalse(
+            PolicyEngine.shouldEnforceVpnLockdown(
+                globalControls = GlobalControls(
+                    managedNetworkMode = ManagedNetworkModeSetting.FORCED_VPN.name,
+                    managedVpnPackage = "com.example.vpn",
+                    managedVpnLockdown = true
+                ),
+                controllerPackageName = "com.ankit.destination",
+                featureEnabled = false
+            )
+        )
+    }
+
+    @Test
+    fun managedNetworkRestrictions_blockVpnAndPrivateDnsInForcedModes() {
+        val forcedVpn = PolicyRestrictions.build(
+            mode = ModeState.NORMAL,
+            globalControls = GlobalControls(),
+            managedNetworkPolicy = ManagedNetworkPolicy.ForcedVpn(
+                packageName = "com.example.vpn",
+                lockdown = true
+            ),
+            sdkInt = 34
+        )
+        val forcedDns = PolicyRestrictions.build(
+            mode = ModeState.NORMAL,
+            globalControls = GlobalControls(),
+            managedNetworkPolicy = ManagedNetworkPolicy.ForcedPrivateDns("dns.example.com"),
+            sdkInt = 34
+        )
+
+        assertTrue(forcedVpn.contains(android.os.UserManager.DISALLOW_CONFIG_VPN))
+        assertTrue(forcedVpn.contains(android.os.UserManager.DISALLOW_CONFIG_PRIVATE_DNS))
+        assertTrue(forcedDns.contains(android.os.UserManager.DISALLOW_CONFIG_VPN))
+        assertTrue(forcedDns.contains(android.os.UserManager.DISALLOW_CONFIG_PRIVATE_DNS))
+    }
+
+    @Test
+    fun usageAccessLockdownEligible_requiresDeviceOwnerAndSuccessfulEnrollmentOrLegacyApply() {
+        assertTrue(
+            PolicyEngine.isUsageAccessLockdownEligible(
+                deviceOwnerActive = true,
+                provisioningFinalizationState = "SUCCESS",
+                hasSuccessfulPolicyApply = false
+            )
+        )
+        assertTrue(
+            PolicyEngine.isUsageAccessLockdownEligible(
+                deviceOwnerActive = true,
+                provisioningFinalizationState = null,
+                hasSuccessfulPolicyApply = true
+            )
+        )
+        // FAILED + prior apply exists → eligible (device was functional before)
+        assertTrue(
+            PolicyEngine.isUsageAccessLockdownEligible(
+                deviceOwnerActive = true,
+                provisioningFinalizationState = "FAILED",
+                hasSuccessfulPolicyApply = true,
+                hasAnyPriorApply = true
+            )
+        )
+        // FAILED + no prior apply → not eligible (genuine fresh failure)
+        assertFalse(
+            PolicyEngine.isUsageAccessLockdownEligible(
+                deviceOwnerActive = true,
+                provisioningFinalizationState = "FAILED",
+                hasSuccessfulPolicyApply = false,
+                hasAnyPriorApply = false
+            )
+        )
+        // PENDING + prior apply → eligible
+        assertTrue(
+            PolicyEngine.isUsageAccessLockdownEligible(
+                deviceOwnerActive = true,
+                provisioningFinalizationState = "PENDING",
+                hasSuccessfulPolicyApply = false,
+                hasAnyPriorApply = true
+            )
+        )
+        // PENDING + no prior apply → not eligible
+        assertFalse(
+            PolicyEngine.isUsageAccessLockdownEligible(
+                deviceOwnerActive = true,
+                provisioningFinalizationState = "PENDING",
+                hasSuccessfulPolicyApply = false,
+                hasAnyPriorApply = false
+            )
+        )
+        assertFalse(
+            PolicyEngine.isUsageAccessLockdownEligible(
+                deviceOwnerActive = false,
+                provisioningFinalizationState = "SUCCESS",
+                hasSuccessfulPolicyApply = true
+            )
+        )
+    }
+
+    @Test
+    fun usageAccessRecoverySuspendTargets_excludeRecoveryAllowlistProtectedAndSystemPackages() {
+        val targets = PackageResolver.computeUsageAccessRecoverySuspendTargets(
+            launchablePackages = setOf(
+                "com.example.launcher",
+                "com.example.app",
+                "com.example.system",
+                "com.ankit.destination",
+                "android"
+            ),
+            recoveryAllowlist = setOf("com.example.launcher", "com.ankit.destination"),
+            controllerPackageName = "com.ankit.destination",
+            isNonSystemPackage = { pkg -> pkg != "com.example.system" }
+        )
+
+        assertEquals(setOf("com.example.app"), targets)
+    }
+
+    @Test
+    fun usageAccessMonitorDebounce_suppressesDuplicateRefreshForSameState() {
+        assertTrue(
+            UsageAccessMonitor.shouldSuppressPolicyRefresh(
+                lastPolicyRefreshGranted = false,
+                nextUsageAccessGranted = false,
+                lastPolicyRefreshAtMs = 1_000L,
+                nowMs = 1_500L,
+                debounceMs = 1_000L
+            )
+        )
+        assertFalse(
+            UsageAccessMonitor.shouldSuppressPolicyRefresh(
+                lastPolicyRefreshGranted = false,
+                nextUsageAccessGranted = true,
+                lastPolicyRefreshAtMs = 1_000L,
+                nowMs = 1_500L,
+                debounceMs = 1_000L
+            )
+        )
+        assertFalse(
+            UsageAccessMonitor.shouldSuppressPolicyRefresh(
+                lastPolicyRefreshGranted = false,
+                nextUsageAccessGranted = false,
+                lastPolicyRefreshAtMs = 1_000L,
+                nowMs = 2_100L,
+                debounceMs = 1_000L
+            )
+        )
+    }
+}

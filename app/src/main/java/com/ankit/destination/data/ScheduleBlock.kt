@@ -14,7 +14,7 @@ data class ScheduleBlock(
     // 0..1439; if end < start => cross-midnight
     val endMinute: Int,
     val enabled: Boolean = true,
-    val kind: String = ScheduleBlockKind.NUCLEAR.name,
+    val kind: String = ScheduleBlockKind.GROUPS.name,
     val strict: Boolean = false,
     val immutable: Boolean = false,
     val timezoneMode: String = ScheduleTimezoneMode.DEVICE_LOCAL.name

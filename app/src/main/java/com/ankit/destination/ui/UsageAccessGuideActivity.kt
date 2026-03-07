@@ -11,6 +11,8 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.ankit.destination.usage.UsageAccess
+import com.ankit.destination.usage.UsageAccessMonitor
+import com.ankit.destination.ui.components.showShortToast
 
 class UsageAccessGuideActivity : AppCompatActivity() {
     private lateinit var statusText: TextView
@@ -23,6 +25,11 @@ class UsageAccessGuideActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        UsageAccessMonitor.refreshNow(
+            context = applicationContext,
+            reason = "usage_access_guide_resume",
+            requestPolicyRefreshIfChanged = true
+        )
         render()
     }
 
@@ -46,7 +53,17 @@ class UsageAccessGuideActivity : AppCompatActivity() {
         val openSettings = Button(this).apply {
             text = "Open Usage Access Settings"
             setOnClickListener {
-                startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+                val usageAccessIntent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
+                val fallbackIntent = Intent(Settings.ACTION_SETTINGS)
+                when {
+                    usageAccessIntent.resolveActivity(packageManager) != null -> {
+                        startActivity(usageAccessIntent)
+                    }
+                    fallbackIntent.resolveActivity(packageManager) != null -> {
+                        startActivity(fallbackIntent)
+                    }
+                    else -> showShortToast("No Settings activity found for Usage Access recovery.")
+                }
             }
         }
 

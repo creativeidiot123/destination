@@ -27,6 +27,7 @@
     </queries>
 
     <application
+        android:name=".DestinationApplication"
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
@@ -50,6 +51,13 @@
             </intent-filter>
         </receiver>
 
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
         <receiver
             android:name=".boot.BootReceiver"
             android:directBootAware="true"
@@ -70,16 +78,17 @@
             android:name=".schedule.ScheduleEventReceiver"
             android:exported="false">
             <intent-filter>
+                <action android:name="android.intent.action.DATE_CHANGED" />
                 <action android:name="android.intent.action.TIME_SET" />
                 <action android:name="android.intent.action.TIMEZONE_CHANGED" />
             </intent-filter>
         </receiver>
 
         <receiver
-            android:name=".touchgrass.UnlockReceiver"
+            android:name=".boot.UserUnlockedReceiver"
             android:exported="false">
             <intent-filter>
-                <action android:name="android.intent.action.USER_PRESENT" />
+                <action android:name="android.intent.action.USER_UNLOCKED" />
             </intent-filter>
         </receiver>
 
@@ -102,6 +111,10 @@
                 <action android:name="android.net.VpnService" />
             </intent-filter>
         </service>
+
+        <service
+            android:name=".provisioning.ShizukuShellUserService"
+            android:exported="false" />
 
         <activity
             android:name=".ui.ProvisioningModeActivity"
@@ -139,33 +152,13 @@
             android:name=".ui.EnrollmentGuideActivity"
             android:exported="false" />
 
-        <activity
-            android:name=".ui.EmergencyAppsActivity"
-            android:exported="false" />
 
-        <activity
-            android:name=".ui.SchedulesActivity"
-            android:exported="false" />
-
-        <activity
-            android:name=".ui.BudgetsActivity"
-            android:exported="false" />
-
-        <activity
-            android:name=".ui.VpnDnsSettingsActivity"
-            android:exported="false" />
-
-        <activity
-            android:name=".ui.AdminControlsActivity"
-            android:exported="false" />
 
         <activity
             android:name=".ui.UsageAccessGuideActivity"
             android:exported="false" />
 
-        <activity
-            android:name=".ui.DiagnosticsActivity"
-            android:exported="false" />
+
 
         <activity
             android:name=".ui.MainActivity"
@@ -175,16 +168,7 @@
 
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-
-            <!-- Allows the DPC to become the HOME app in Nuclear mode (kiosk persistence across reboot). -->
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-
-                <category android:name="android.intent.category.HOME" />
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
         </activity>
     </application>
 
 </manifest>
-
