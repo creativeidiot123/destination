@@ -153,8 +153,8 @@ class PackageChangeReceiver : BroadcastReceiver() {
                         return@forEach
                     }
 
-                    val shouldBlockForAlwaysBlocked = alwaysBlocked.contains(changedPackage)
                     val suspendable = resolver.filterSuspendable(setOf(changedPackage), allowlist)
+                    val shouldBlockForAlwaysBlocked = alwaysBlocked.contains(changedPackage) && suspendable.isNotEmpty()
                     if (suspendable.isEmpty() && !shouldBlockForAlwaysBlocked) {
                         return@forEach
                     }
@@ -199,4 +199,3 @@ class PackageChangeReceiver : BroadcastReceiver() {
         val pendingResults: MutableList<BroadcastReceiver.PendingResult>
     )
 }
-

@@ -4,6 +4,8 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import com.ankit.destination.enforce.PolicyApplyOrchestrator
+import com.ankit.destination.policy.FocusEventId
+import com.ankit.destination.policy.FocusLog
 import com.ankit.destination.usage.UsageAccessMonitor
 
 class ScheduleTickReceiver : BroadcastReceiver() {
@@ -15,16 +17,20 @@ class ScheduleTickReceiver : BroadcastReceiver() {
             else -> action
         }
         val pending = goAsync()
-        UsageAccessMonitor.refreshNow(
-            context = context,
-            reason = trigger,
-            requestPolicyRefreshIfChanged = false
-        )
-        PolicyApplyOrchestrator.requestApply(
-            context = context,
-            reason = "ScheduleTickReceiver:$trigger",
-            onComplete = { pending.finish() }
-        )
+        try {
+            UsageAccessMonitor.refreshNow(
+                context = context,
+                reason = trigger,
+                requestPolicyRefreshIfChanged = false
+            )
+            PolicyApplyOrchestrator.requestApply(
+                context = context,
+                reason = "ScheduleTickReceiver:$trigger",
+                onComplete = { pending.finish() }
+            )
+        } catch (t: Throwable) {
+            FocusLog.e(FocusEventId.SCHEDULE_ENFORCE_FAIL, "Schedule tick handling failed", t)
+            pending.finish()
+        }
     }
 }
-

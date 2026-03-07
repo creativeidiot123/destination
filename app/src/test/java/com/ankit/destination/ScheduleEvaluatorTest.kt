@@ -186,12 +186,13 @@ class ScheduleEvaluatorTest {
                     strict = true,
                     kind = ScheduleBlockKind.GROUPS.name
                 )
-            )
+            ),
+            blockGroups = mapOf(5L to setOf("study"))
         )
         assertTrue(decision.strictActive)
     }
 
-    @Test fun `25c groups schedule emits blocked group ids and does not force lock`() {
+    @Test fun `25c groups schedule emits blocked group ids and does force lock when targets resolve`() {
         val block = block(
             id = 5,
             name = "Social time",
@@ -205,8 +206,28 @@ class ScheduleEvaluatorTest {
             listOf(block),
             blockGroups = mapOf(5L to setOf("social", "short_video"))
         )
-        assertFalse(decision.shouldLock)
+        assertTrue(decision.shouldLock)
         assertEquals(setOf("social", "short_video"), decision.blockedGroupIds)
+    }
+
+    @Test fun `25d strict blocks with no targets should not lock`() {
+        val decision = ScheduleEvaluator.evaluate(
+            zdt(2026, 1, 5, 10, 30),
+            listOf(
+                block(
+                    id = 5,
+                    name = "Strict social",
+                    days = mon,
+                    start = 540,
+                    end = 780,
+                    strict = true,
+                    kind = ScheduleBlockKind.GROUPS.name
+                )
+            )
+        )
+        assertFalse(decision.shouldLock)
+        assertFalse(decision.strictActive)
+        assertEquals(emptySet<String>(), decision.blockedGroupIds)
     }
 
     @Test fun `26 weekly block works for friday`() {
@@ -287,8 +308,9 @@ class ScheduleEvaluatorTest {
             blockGroups = emptyMap()
         )
 
-        assertTrue(decision.strictActive)
-        assertTrue(decision.reason.contains("Strict group schedule active"))
+        assertFalse(decision.strictActive)
+        assertFalse(decision.shouldLock)
+        assertTrue(decision.reason.contains("Group schedule active"))
     }
 
     @Test fun `36 fall-back dst overlap chooses second-occurrence transition when now is in second hour`() {

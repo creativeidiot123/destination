@@ -985,7 +985,7 @@ class PolicyEngine(context: Context) {
         )
         val alwaysBlockedSuspendable = resolver.filterSuspendable(
             packages = orchestrated.policyControls.alwaysBlockedInstalledPackages,
-            allowlist = emptySet()
+            allowlist = allowlistPackages
         )
         val strictInstallSuspendable = resolver.filterSuspendable(
             packages = orchestrated.evaluation.strictInstallBlockedPackages,
@@ -1022,8 +1022,9 @@ class PolicyEngine(context: Context) {
             fullReasons.getOrPut(pkg) { linkedSetOf() }.add(EffectiveBlockReason.ALWAYS_BLOCKED.name)
         }
         scheduleBlockedSuspendable.forEach { pkg ->
-            if (!fullReasons.containsKey(pkg)) {
-                fullReasons[pkg] = linkedSetOf()
+            val reasons = fullReasons.getOrPut(pkg) { linkedSetOf() }
+            if (reasons.isEmpty()) {
+                reasons.add(EffectiveBlockReason.SCHEDULED_BLOCK.name)
             }
         }
         val immutableReasonMap = fullReasons.mapValues { it.value.toSet() }
@@ -1033,7 +1034,7 @@ class PolicyEngine(context: Context) {
             scheduleLockComputed = orchestrated.scheduleDecision.shouldLock,
             scheduleStrictComputed = orchestrated.strictActive,
             scheduleBlockedGroups = orchestrated.scheduledGroupIds,
-            scheduleBlockedPackages = derivedSuspendTargets,
+            scheduleBlockedPackages = scheduleBlockedSuspendable,
             scheduleLockReason = orchestrated.scheduleDecision.reason,
             scheduleNextTransitionAtMs = orchestrated.scheduleDecision.nextTransitionAt?.toInstant()?.toEpochMilli(),
             budgetBlockedPackages = derivedSuspendTargets,
@@ -1122,13 +1123,11 @@ class PolicyEngine(context: Context) {
             touchGrassBreakUntilMs = null,
             nowMs = nowMs
         )
+        val scheduleReason = store.getScheduleLockReason()
         val lockReason = when {
             usageAccessComplianceState.lockdownActive -> usageAccessComplianceState.reason
-            scheduleComputed && store.getScheduleBlockedPackages().isNotEmpty() ->
-                store.getScheduleLockReason() ?: "Scheduled group block active"
-            strictActive -> store.getScheduleLockReason() ?: "Strict group schedule active"
-            store.getScheduleBlockedPackages().isNotEmpty() ->
-                store.getScheduleLockReason() ?: "Scheduled group block active"
+            strictActive -> scheduleReason ?: "Strict group schedule active"
+            scheduleComputed -> scheduleReason ?: "Scheduled block active"
             budgetBlocked.isNotEmpty() -> store.getBudgetReason() ?: "Policy limits exceeded"
             else -> null
         }

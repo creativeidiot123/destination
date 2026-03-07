@@ -100,7 +100,7 @@ class PolicyEvaluator(
         FocusLog.d(FocusEventId.SUSPEND_TARGET, "â”‚ budgetBlockedSuspendable=${budgetBlockedSuspendable.size} (from ${budgetBlockedPackages.size} budget blocked)")
         val alwaysBlockedSuspendable = packageResolver.filterSuspendable(
             packages = alwaysBlockedApps,
-            allowlist = emptySet()
+            allowlist = allowlistResolution.packages
         )
         FocusLog.d(FocusEventId.SUSPEND_TARGET, "â”‚ alwaysBlockedSuspendable=${alwaysBlockedSuspendable.size} (from ${alwaysBlockedApps.size} always blocked)")
         if (alwaysBlockedSuspendable.isNotEmpty()) {

@@ -206,4 +206,19 @@ class PolicyEngineLogicTest {
 
         assertEquals(10_001L, next)
     }
+
+    @Test
+    fun encodeSingleAppScheduleTarget_roundTrip() {
+        val target = PolicyEngine.encodeSingleAppScheduleTarget("com.example.app")
+        assertEquals("com.example.app", PolicyEngine.decodeSingleAppScheduleTarget(target))
+        assertTrue(PolicyEngine.isSingleAppScheduleTarget(target))
+    }
+
+    @Test
+    fun decodeSingleAppScheduleTarget_rejects_invalidPayload() {
+        assertNull(PolicyEngine.decodeSingleAppScheduleTarget("app:"))
+        assertNull(PolicyEngine.decodeSingleAppScheduleTarget("group:com.example"))
+        assertNull(PolicyEngine.decodeSingleAppScheduleTarget(""))
+        assertFalse(PolicyEngine.isSingleAppScheduleTarget(""))
+    }
 }

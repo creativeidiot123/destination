@@ -41,9 +41,9 @@ object ScheduleEvaluator {
 
         val activeGroups = groupBlocks.filter { isActive(it, now) }
         val activeNuclear = nuclearBlocks.filter { isActive(it, now) }
-        val shouldLock = activeNuclear.isNotEmpty()
-        val strictActive = activeGroups.any { it.strict }
         val blockedGroupIds = activeGroups.flatMap { blockGroups[it.id].orEmpty() }.toSet()
+        val shouldLock = blockedGroupIds.isNotEmpty()
+        val strictActive = shouldLock && activeGroups.any { it.strict }
         val groupNames = activeGroups.joinToString(", ") { it.name }
         val nuclearNames = activeNuclear.joinToString(", ") { it.name }
         val reason = when {
