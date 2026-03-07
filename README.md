@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="app/src/main/res/mipmap-xxxhdpi/ic_launcher.png" alt="Destination App Icon" width="128" height="128">
+</p>
+
 # Destination 🛡️
 > *Un-bypassable Digital Wellbeing & App Blocking for Android.*
 
@@ -22,18 +26,16 @@ Once a rule is active, apps are locked out at the OS level—making restrictions
 
 Because Destination requires system-level privileges to suspend packages, it **must** be provisioned as the Device Owner via ADB. 
 
-> [!WARNING]
-> Setting a Device Owner requires that **no accounts** (e.g., Google Accounts) are present on the device during provisioning. You can add your accounts back normally after setup is complete.
+> [!IMPORTANT]
+> **No device reset or factory wipe is needed!** Standard Device Owner provisioning strictly requires a factory reset, but by temporarily removing all accounts, you can bypass this requirement.
 
 ### Step-by-Step ADB Provisioning
 
 1.  **Install the Application**: Build the project and install the APK onto your Android device.
-    ```bash
-    ./gradlew assembleDebug
-    adb install -r app/build/outputs/apk/debug/app-debug.apk
+    ```install latest apk in release
     ```
 
-2.  **Remove All Accounts**: Go to your device's **Settings > Passwords & Accounts** and remove all existing accounts temporarily.
+2.  **Remove All Accounts Temporarily**: Go to your device's **Settings > Passwords & Accounts** and remove all existing accounts (like Google Accounts). *You will add these back immediately after setup.*
     *   *Verify via ADB:*
         ```bash
         adb shell dumpsys account
@@ -50,7 +52,7 @@ Because Destination requires system-level privileges to suspend packages, it **m
     adb shell cmd appops set com.ankit.destination GET_USAGE_STATS allow
     ```
 
-5.  **Complete Setup**: Open the Destination app. You can now safely re-add your Google/device accounts.
+5.  **Complete Setup**: Open the Destination app. You can now safely re-add your Google and device accounts in your system settings.
 
 ---
 
