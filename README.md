@@ -2,73 +2,90 @@
   <img src="app/src/main/res/mipmap-xxxhdpi/ic_launcher.png" alt="Destination App Icon" width="128" height="128">
 </p>
 
-# Destination 🛡️
-> *Un-bypassable Digital Wellbeing & App Blocking for Android.*
+<h1 align="center">Destination 🛡️</h1>
 
-**Destination** is an advanced, high-friction digital wellbeing application engineered to provide strict, system-level app blocking. Unlike standard blockers that rely on easily bypassed accessibility overlays, Destination operates as a **Device Owner**, utilizing Android's `DevicePolicyManager` to physically suspend packages. 
+<p align="center">
+  <strong>System-level digital wellbeing and app blocking for Android.</strong>
+</p>
 
-Once a rule is active, apps are locked out at the OS level—making restrictions robust, persistent, and incredibly difficult to circumvent.
-
----
-
-## ✨ Core Features
-
-*   **System-Level Package Suspension**: Enforces blocks natively via `DevicePolicyManager.setPackagesSuspended()`. When an app is blocked, it is completely inaccessible.
-*   **Granular Usage Budgets**: Set precise daily caps, hourly caps, or limit the number of app opens.
-*   **Advanced Scheduling**: Create custom, recurring schedules for deep work or focus sessions.
-*   **Strict Install Protection**: When a "Strict Schedule" is active, side-loading or installing new apps is actively blocked to prevent workarounds (`STRICT_INSTALL` staging).
-*   **Emergency Safety Nets**: Exempt critical apps (like the default Dialer or SMS) and manage "Emergency Apps" to ensure the device remains safe and usable during total lockdowns.
-*   **Deep Diagnostics & Tracking**: Built-in verifiable state architectures and usage snapshots track exactly why an app is suspended, resolving conflicting rules deterministically.
+<p align="center">
+  Built for people who want restrictions that are durable, enforceable, and hard to bypass.
+</p>
 
 ---
 
-## 🚀 Installation & Setup
+## Overview
 
-Because Destination requires system-level privileges to suspend packages, it **must** be provisioned as the Device Owner via ADB. 
+**Destination** is a high-friction digital wellbeing app for Android that blocks apps at the **operating system level**.
+
+Unlike typical app blockers that depend on accessibility overlays, soft warnings, or easy-to-disable permissions, Destination is designed to run as a **Device Owner** and enforce restrictions using Android’s `DevicePolicyManager`.
+
+That means when a rule becomes active, the target app is not just covered or discouraged — it is **actually suspended by the OS**.
+
+This makes blocking far more reliable, persistent, and resistant to common bypass methods.
+
+---
+
+## Why Destination?
+
+Most digital wellbeing apps are easy to break:
+
+- disable accessibility
+- force stop the app
+- revoke permissions
+- install alternatives
+- exploit timing gaps or state drift
+
+Destination is built to avoid that pattern.
+
+It focuses on **deterministic enforcement**, **strict rule evaluation**, and **real device-level control** so that blocking remains effective when it actually matters.
+
+---
+
+## Features
+
+### OS-level app blocking
+Blocks apps using `DevicePolicyManager.setPackagesSuspended()` so restricted apps become inaccessible at the system level.
+
+### Usage budgets
+Set limits based on:
+
+- daily usage time
+- hourly usage time
+- app open count
+
+### Scheduling
+Create recurring schedules for focus time, work sessions, sleep windows, or custom blocking periods.
+
+### Strict install protection
+During strict schedules, Destination can prevent workaround behavior by blocking or controlling newly installed apps.
+
+### Emergency safeguards
+Protect critical device usability with emergency-safe handling for apps like the default dialer, SMS, or other essential tools.
+
+### Deterministic policy evaluation
+Rules are evaluated through a structured policy pipeline so overlapping schedules, limits, and app/group rules resolve consistently.
+
+### Diagnostics and state tracking
+Track why an app is blocked, what rule triggered it, and how the current enforcement state was derived.
+
+---
+
+## Installation & Setup
+
+Because Destination uses system-level Android management APIs, it must be provisioned as a **Device Owner** through ADB.
 
 > [!IMPORTANT]
-> **No device reset or factory wipe is needed!** Standard Device Owner provisioning strictly requires a factory reset, but by temporarily removing all accounts, you can bypass this requirement.
-
-### Step-by-Step ADB Provisioning
-
-1.  **Install the Application**: Build the project and install the APK onto your Android device.
-    ```install latest apk in release
-    ```
-
-2.  **Remove All Accounts Temporarily**: Go to your device's **Settings > Passwords & Accounts** and remove all existing accounts (like Google Accounts). *You will add these back immediately after setup.*
-    *   *Verify via ADB:*
-        ```bash
-        adb shell dumpsys account
-        ```
-    *   Ensure the output shows no active accounts, if it shows any apps and their accounts, uninstall those apps temporarily.
-
-3.  **Set Device Owner**: Run the following ADB command to grant Destination Device Owner privileges:
-    ```bash
-    adb shell dpm set-device-owner com.ankit.destination/.admin.FocusDeviceAdminReceiver
-    ```
-
-4.  **Grant Usage Access**: Allow the app to read usage statistics to enforce budgets and schedules:
-    ```bash
-    adb shell cmd appops set com.ankit.destination GET_USAGE_STATS allow
-    ```
-
-5.  **Complete Setup**: Open the Destination app. You can now safely re-add your Google and device accounts in your system settings.
+> Standard Android Device Owner provisioning usually requires a factory reset.  
+> In many cases, you can provision without wiping the device by temporarily removing all accounts first.
 
 ---
 
-## 🛠️ Architecture & Tech Stack
+## ADB Provisioning Steps
 
-Destination is built entirely with modern Android development practices:
+### 1. Install the app
+Build and install the latest APK on your Android device.
 
-*   **Language**: 100% Kotlin
-*   **UI Framework**: Jetpack Compose (Material 3)
-*   **Concurrency**: Kotlin Coroutines & Flow
-*   **Local Storage**: Room Database (SQLite) for deterministic policy storage (`PolicyStore`)
-*   **Privilege Escalation**: `DevicePolicyManager` (Device Owner) & Shizuku API
-*   **Architecture**: Multi-stage evaluation pipeline prioritizing canonical union-of-reasons (`PolicyEngine` -> `EffectivePolicyEvaluator` -> `PolicyApplier`).
-
----
-
-## 📝 License
-
-This project is licensed under the terms specified in the [LICENSE](LICENSE) file.
+```bash
+# install your latest release APK
+adb install app-release.apk
