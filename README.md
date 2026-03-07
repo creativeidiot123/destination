@@ -17,7 +17,7 @@
 
 ---
 
-Most app blockers are a joke — tap twice, switch launchers, done. **Destination is different.**
+Most app blockers are a joke — tap twice, switch launchers, go to adb/ safe mode done. **Destination is different.**
 
 It runs as a **Device Owner**, using Android's `DevicePolicyManager` to *physically suspend packages at the OS level*. When an app is blocked, it doesn't show up. It doesn't launch. It's gone — until you say otherwise.
 
