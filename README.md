@@ -21,6 +21,26 @@ Most app blockers are a joke — tap twice, switch launchers, done. **Destinatio
 
 It runs as a **Device Owner**, using Android's `DevicePolicyManager` to *physically suspend packages at the OS level*. When an app is blocked, it doesn't show up. It doesn't launch. It's gone — until you say otherwise.
 
+No accessibility service nonsense. No overlay tricks. The OS itself is doing the blocking.
+
+---
+
+## 🧱 Bypass Prevention
+
+This is what makes Destination actually serious. Every known escape hatch is closed:
+
+| Attack Vector | How Destination handles it |
+|---|---|
+| **Fast App Switching** | Irrelevant — suspension is OS-level, not overlay-based |
+| **Changing System Time** | Blocked. Clock manipulation doesn't fool the scheduler |
+| **ADB Commands** | Detected and blocked during active strict sessions |
+| **Safe Mode** | Blocked. Safe mode boot is prevented while rules are active |
+| **Creating New Users** | User creation is disabled — no "work profile" workarounds |
+| **App Cloners** | Cloned package detection prevents duplicate-app bypasses |
+| **Sideloading New Apps** | Install blocked entirely during strict schedules |
+
+> If you're the type to find loopholes, you're also the type who needs this app most.
+
 ---
 
 ## ✨ Features
@@ -38,7 +58,7 @@ It runs as a **Device Owner**, using Android's `DevicePolicyManager` to *physica
 
 ## 🚀 Setup (ADB Required)
 
-> Device Owner access requires ADB. No factory reset needed — just temporarily remove your accounts.
+> Device Owner access requires ADB. No factory reset needed — just temporarily remove your accounts. Takes just 5 minutes
 
 ### Step 1 — Install the APK
 
@@ -69,7 +89,7 @@ adb shell cmd appops set com.ankit.destination GET_USAGE_STATS allow
 
 ### Step 5 — You're done
 
-Open Destination, then re-add your Google and device accounts. That's it.
+Open Destination, then re-add your Google and device accounts. That's it. 
 
 ---
 
