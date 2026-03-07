@@ -30,8 +30,7 @@ class PolicyApplier(private val facade: DevicePolicyFacade) {
             )
         }
 
-        // If we're leaving Nuclear, exit lock task first
-        if (hostActivity != null && state.mode == ModeState.NORMAL) {
+        if (hostActivity != null) {
             val lockTaskState = facade.lockTaskModeState() ?: ActivityManager.LOCK_TASK_MODE_NONE
             if (lockTaskState != ActivityManager.LOCK_TASK_MODE_NONE) {
                 FocusLog.d(FocusEventId.LOCK_CALC, "│ Exiting lock task (was mode=$lockTaskState)")
@@ -45,7 +44,7 @@ class PolicyApplier(private val facade: DevicePolicyFacade) {
             addAll(state.uninstallProtectedPackages)
         }
         val previouslyUninstallProtected = state.previouslyUninstallProtectedPackages
-        val toProtect = desiredUninstallProtected
+        val toProtect = desiredUninstallProtected - previouslyUninstallProtected
         val toUnprotect = previouslyUninstallProtected - desiredUninstallProtected
         val failedToProtectUninstall = linkedSetOf<String>()
         val failedToUnprotectUninstall = linkedSetOf<String>()
@@ -122,7 +121,7 @@ class PolicyApplier(private val facade: DevicePolicyFacade) {
         FocusLog.d(FocusEventId.MANAGED_NETWORK_CHANGE, "│ applyManagedNetworkPolicy: ${state.managedNetworkPolicy}")
         applyManagedNetworkPolicy(state.managedNetworkPolicy, errors)
 
-        runCatching { facade.setAsHomeForKiosk(state.mode == ModeState.NUCLEAR) }
+        runCatching { facade.setAsHomeForKiosk(false) }
             .onFailure { errors += "setAsHomeForKiosk failed: ${it.message}" }
 
         val toSuspend = state.suspendTargets - state.previouslySuspended
@@ -159,13 +158,6 @@ class PolicyApplier(private val facade: DevicePolicyFacade) {
             FocusLog.e(FocusEventId.SUSPEND_TARGET, "│ ❌ FAILED to unsuspend: ${failedToUnsuspend.joinToString(",")}")
         }
 
-        if (hostActivity != null) {
-            if (state.mode == ModeState.NUCLEAR) {
-                FocusLog.d(FocusEventId.LOCK_CALC, "│ Starting lock task for NUCLEAR mode")
-                runOnMainThreadBlocking(hostActivity) { hostActivity.startLockTask() }
-                    ?.let { errors += "startLockTask failed: ${it.message}" }
-            }
-        }
 
         FocusLog.d(FocusEventId.POLICY_APPLY_DONE, "└── PolicyApplier.apply() END — errors=${errors.size} failedSuspend=${failedToSuspend.size} failedUnsuspend=${failedToUnsuspend.size}")
         if (errors.isNotEmpty()) {
@@ -206,10 +198,7 @@ class PolicyApplier(private val facade: DevicePolicyFacade) {
             FocusLog.d(FocusEventId.POLICY_VERIFY_FAIL, "│ lockTaskFeatures mismatch: actual=$lockTaskFeatures expected=${state.lockTaskFeatures}")
         }
         val homePinned = runCatching { facade.isHomeAppPinnedToSelf() }.getOrNull()
-        when {
-            state.mode == ModeState.NUCLEAR && homePinned == false -> issues += "Home app pinning missing"
-            state.mode == ModeState.NORMAL && homePinned == true -> issues += "Home app pinning still active"
-        }
+        if (homePinned == true) issues += "Home app pinning still active"
 
         verifyManagedNetworkPolicy(state.managedNetworkPolicy, issues)
 
@@ -321,9 +310,8 @@ class PolicyApplier(private val facade: DevicePolicyFacade) {
 
         val lockTaskActive = if (hostActivity != null) {
             val active = facade.lockTaskModeState() != ActivityManager.LOCK_TASK_MODE_NONE
-            when {
-                state.mode == ModeState.NUCLEAR && !active -> issues += "Lock task mode not active in foreground activity"
-                state.mode == ModeState.NORMAL && active -> issues += "Lock task mode still active in foreground activity"
+            if (active) {
+                issues += "Lock task mode still active in foreground activity"
             }
             active
         } else {

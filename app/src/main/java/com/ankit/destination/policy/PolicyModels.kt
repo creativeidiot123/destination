@@ -3,8 +3,7 @@ package com.ankit.destination.policy
 import com.ankit.destination.data.GlobalControls
 
 enum class ModeState {
-    NORMAL,
-    NUCLEAR
+    NORMAL
 }
 
 data class AllowlistResolution(
@@ -105,7 +104,6 @@ data class DiagnosticsSnapshot(
     val lastSuspendedPackages: Set<String>,
     val restrictions: Map<String, Boolean>,
     val vpnActive: Boolean,
-    val vpnRequiredForNuclear: Boolean,
     val vpnLockdownRequired: Boolean,
     val vpnLastError: String?,
     val alwaysOnVpnPackage: String?,

@@ -29,29 +29,23 @@ object ScheduleEvaluator {
     ): ScheduleDecision {
         val enabled = blocks.filter { it.enabled && hasValidWindow(it) }
         val groupBlocks = enabled.filter { it.kind == ScheduleBlockKind.GROUPS.name }
-        val nuclearBlocks = enabled.filter { it.kind == ScheduleBlockKind.NUCLEAR.name }
         FocusLog.d(
             FocusEventId.SCHEDULE_EVAL,
-            "┌─── ScheduleEvaluator.evaluate() total=${blocks.size} enabled=${enabled.size} groups=${groupBlocks.size} nuclear=${nuclearBlocks.size}"
+            "ScheduleEvaluator.evaluate() total=${blocks.size} enabled=${enabled.size} groups=${groupBlocks.size}"
         )
         if (enabled.isEmpty()) {
-            FocusLog.d(FocusEventId.SCHEDULE_EVAL, "└─── No enabled schedules")
+            FocusLog.d(FocusEventId.SCHEDULE_EVAL, "No enabled schedules")
             return ScheduleDecision(false, false, emptySet(), "No schedules", emptySet(), null)
         }
 
         val activeGroups = groupBlocks.filter { isActive(it, now) }
-        val activeNuclear = nuclearBlocks.filter { isActive(it, now) }
         val blockedGroupIds = activeGroups.flatMap { blockGroups[it.id].orEmpty() }.toSet()
         val shouldLock = blockedGroupIds.isNotEmpty()
         val strictActive = shouldLock && activeGroups.any { it.strict }
         val groupNames = activeGroups.joinToString(", ") { it.name }
-        val nuclearNames = activeNuclear.joinToString(", ") { it.name }
         val reason = when {
-            shouldLock && strictActive ->
-                "Nuclear schedule active: $nuclearNames | Strict group schedule active: $groupNames"
-            shouldLock -> "Nuclear schedule active: $nuclearNames"
-            strictActive -> "Strict group schedule active: $groupNames"
-            activeGroups.isNotEmpty() -> "Group schedule active: $groupNames"
+            shouldLock && strictActive -> "Strict group schedule active: $groupNames"
+            shouldLock -> "Group schedule active: $groupNames"
             else -> "Outside scheduled blocks"
         }
 
@@ -59,39 +53,31 @@ object ScheduleEvaluator {
 
         FocusLog.d(
             FocusEventId.SCHEDULE_EVAL,
-            "│ activeGroups=${activeGroups.size} activeNuclear=${activeNuclear.size} strictGroups=$strictActive blockedGroups=${blockedGroupIds.size}"
+            "activeGroups=${activeGroups.size} strictGroups=$strictActive blockedGroups=${blockedGroupIds.size}"
         )
         if (activeGroups.isNotEmpty()) {
             activeGroups.forEach { block ->
                 val groups = blockGroups[block.id].orEmpty()
                 FocusLog.d(
                     FocusEventId.SCHEDULE_EVAL,
-                    "│   active block: id=${block.id} name=${block.name} strict=${block.strict} start=${block.startMinute} end=${block.endMinute} groups=${groups.joinToString(",")}"
-                )
-            }
-        }
-        if (activeNuclear.isNotEmpty()) {
-            activeNuclear.forEach { block ->
-                FocusLog.d(
-                    FocusEventId.SCHEDULE_EVAL,
-                    "│   nuclear block: id=${block.id} name=${block.name} start=${block.startMinute} end=${block.endMinute}"
+                    "active block: id=${block.id} name=${block.name} strict=${block.strict} start=${block.startMinute} end=${block.endMinute} groups=${groups.joinToString(",")}"
                 )
             }
         }
         if (blockedGroupIds.isNotEmpty()) {
             FocusLog.d(
                 FocusEventId.SCHEDULE_EVAL,
-                "│ blockedGroupIds: ${blockedGroupIds.joinToString(",")}"
+                "blockedGroupIds: ${blockedGroupIds.joinToString(",")}"
             )
         }
-        FocusLog.d(FocusEventId.SCHEDULE_EVAL, "└─── nextTransition=${next} reason=$reason")
+        FocusLog.d(FocusEventId.SCHEDULE_EVAL, "nextTransition=$next reason=$reason")
 
         return ScheduleDecision(
             shouldLock = shouldLock,
             strictActive = strictActive,
             blockedGroupIds = blockedGroupIds,
             reason = reason,
-            activeBlockIds = (activeGroups.asSequence() + activeNuclear.asSequence()).map { it.id }.toSet(),
+            activeBlockIds = activeGroups.map { it.id }.toSet(),
             nextTransitionAt = next
         )
     }

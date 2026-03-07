@@ -14,14 +14,10 @@ internal object PolicyRestrictions {
     )
 
     fun build(
-        mode: ModeState,
         globalControls: GlobalControls,
         managedNetworkPolicy: ManagedNetworkPolicy = ManagedNetworkPolicy.Unmanaged,
         sdkInt: Int = Build.VERSION.SDK_INT
     ): Set<String> = buildSet {
-        if (mode == ModeState.NUCLEAR) {
-            addAll(FocusConfig.nuclearRestrictions())
-        }
         when (managedNetworkPolicy) {
             is ManagedNetworkPolicy.ForcedVpn,
             is ManagedNetworkPolicy.ForcedPrivateDns -> {
@@ -62,7 +58,6 @@ internal object PolicyRestrictions {
         desiredRestrictions: Set<String>,
         sdkInt: Int = Build.VERSION.SDK_INT
     ): Set<String> = buildSet {
-        addAll(FocusConfig.nuclearRestrictions())
         addAll(desiredRestrictions)
         bestEffortRestrictions
             .filterTo(this) { isSupported(it, sdkInt) }

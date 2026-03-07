@@ -66,27 +66,12 @@ class AdminPolicyLogicTest {
     @Test
     fun mergeSuspendTargets_includesStrictInstallPackages_inNormalMode() {
         val merged = PolicyEvaluator.mergeSuspendTargets(
-            effectiveMode = ModeState.NORMAL,
-            nuclearSuspendTargets = setOf("nuclearOnly"),
             budgetBlockedSuspendable = setOf("budget"),
             alwaysBlockedSuspendable = setOf("always"),
             strictInstallSuspendable = setOf("fresh.install")
         )
 
         assertEquals(setOf("budget", "always", "fresh.install"), merged)
-    }
-
-    @Test
-    fun mergeSuspendTargets_includesStrictInstallPackages_inNuclearMode() {
-        val merged = PolicyEvaluator.mergeSuspendTargets(
-            effectiveMode = ModeState.NUCLEAR,
-            nuclearSuspendTargets = setOf("nuclearOnly"),
-            budgetBlockedSuspendable = setOf("budget"),
-            alwaysBlockedSuspendable = setOf("always"),
-            strictInstallSuspendable = setOf("fresh.install")
-        )
-
-        assertEquals(setOf("nuclearOnly", "budget", "always", "fresh.install"), merged)
     }
 
     @Test

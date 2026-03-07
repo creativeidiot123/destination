@@ -4,13 +4,13 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.os.Build
 import com.ankit.destination.enforce.EnforcementExecutor
 import com.ankit.destination.enforce.PolicyApplyOrchestrator
 import com.ankit.destination.policy.FocusEventId
 import com.ankit.destination.policy.FocusLog
 import com.ankit.destination.policy.PackageResolver
 import com.ankit.destination.policy.PolicyEngine
-import com.ankit.destination.policy.PolicyStore
 
 
 class PackageChangeReceiver : BroadcastReceiver() {
@@ -20,12 +20,13 @@ class PackageChangeReceiver : BroadcastReceiver() {
         private const val PREF_KEY = "runtime_package_receiver"
         private const val PREF_NAME = "destination_runtime_receivers"
         private const val PREF_RUNTIME_REGISTERED = "package_change_runtime_registered"
-        private var runtimeRegistered = false
+        @Volatile private var runtimeRegistered = false
         private var runtimeReceiver: PackageChangeReceiver? = null
+        private val runtimeRegistrationLock = Any()
 
         fun ensureRuntimeRegistration(context: Context) {
             if (runtimeRegistered) return
-            synchronized(PendingPackageEvent) {
+            synchronized(runtimeRegistrationLock) {
                 if (runtimeRegistered) return
                 runCatching {
                     val filter = IntentFilter().apply {
@@ -35,8 +36,12 @@ class PackageChangeReceiver : BroadcastReceiver() {
                     }
                     val appContext = context.applicationContext
                     val receiver = PackageChangeReceiver()
-                    @Suppress("DEPRECATION")
-                    appContext.registerReceiver(receiver, filter)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        appContext.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        appContext.registerReceiver(receiver, filter)
+                    }
                     runtimeReceiver = receiver
                     runtimeRegistered = true
                     FocusLog.i(FocusEventId.PACKAGE_INSTALL_DETECT, "Runtime package change receiver registered")
@@ -124,48 +129,30 @@ class PackageChangeReceiver : BroadcastReceiver() {
                     userChosenEmergencyApps = engine.getEmergencyApps(),
                     alwaysAllowedApps = alwaysAllowed
                 ).packages
-                val store = PolicyStore(context)
                 var shouldEnforce = false
-                var trigger = "package_change"
-
-                if (store.isScheduleStrictComputed()) {
-                    eventsToProcess.forEach { event ->
-                        runCatching {
-                            engine.onNewPackageInstalledDuringStrictSchedule(event.packageName)
-                        }.onFailure { throwable ->
-                            FocusLog.e(
-                                FocusEventId.PACKAGE_INSTALL_DETECT,
-                                "Strict-install staging failed for ${event.packageName}",
-                                throwable
-                            )
-                        }
-                    }
-                }
 
                 eventsToProcess.forEach { event ->
                     val changedPackage = event.packageName
                     if (changedPackage == managedVpnPackage) {
                         shouldEnforce = true
-                        trigger = "managed_vpn:${event.action}:$changedPackage"
                         return@forEach
                     }
                     if (alwaysAllowed.contains(changedPackage)) {
                         return@forEach
                     }
-
                     val suspendable = resolver.filterSuspendable(setOf(changedPackage), allowlist)
-                    val shouldBlockForAlwaysBlocked = alwaysBlocked.contains(changedPackage) && suspendable.isNotEmpty()
-                    if (suspendable.isEmpty() && !shouldBlockForAlwaysBlocked) {
+                    if (suspendable.isEmpty()) {
                         return@forEach
                     }
 
-                    if (!shouldBlockForAlwaysBlocked) {
-                        val strictStaged = engine.onNewPackageInstalledDuringStrictSchedule(changedPackage)
-                        if (!strictStaged) return@forEach
+                    if (alwaysBlocked.contains(changedPackage)) {
+                        shouldEnforce = true
+                        return@forEach
                     }
 
+                    val strictStaged = engine.onNewPackageInstalledDuringStrictSchedule(changedPackage)
+                    if (!strictStaged) return@forEach
                     shouldEnforce = true
-                    trigger = "${event.action}:$changedPackage"
                 }
 
                 if (shouldEnforce) {

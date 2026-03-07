@@ -176,7 +176,7 @@ abstract class FocusDatabase : RoomDatabase() {
         private val MIGRATION_6_7 = object : Migration(6, 7) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
-                    "ALTER TABLE schedule_blocks ADD COLUMN kind TEXT NOT NULL DEFAULT 'NUCLEAR'"
+                    "ALTER TABLE schedule_blocks ADD COLUMN kind TEXT NOT NULL DEFAULT 'GROUPS'"
                 )
                 db.execSQL(
                     """
@@ -423,3 +423,4 @@ abstract class FocusDatabase : RoomDatabase() {
         }
     }
 }
+

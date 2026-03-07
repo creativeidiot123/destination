@@ -372,6 +372,7 @@ class FocusVpnService : VpnService() {
             try {
                 DatagramSocket().use { socket ->
                     if (!protect(socket)) {
+                        lastError = "$ip protect() failed"
                         return@use
                     }
                     socket.soTimeout = 2_000

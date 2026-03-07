@@ -511,7 +511,7 @@ class PolicyEngine(context: Context) {
             touchGrassBreakActive = external.touchGrassBreakActive,
             usageAccessComplianceState = external.usageAccessComplianceState
         )
-        val restrictions = FocusConfig.nuclearRestrictions().associateWith { facade.hasUserRestriction(it) }
+        val restrictions = expected.restrictions.associateWith { facade.hasUserRestriction(it) }
         val scheduleReason = store.getScheduleLockReason()
         val scheduleComputed = store.isScheduleLockComputed()
         val scheduleActive = store.isScheduleLockEnforced()
@@ -555,7 +555,6 @@ class PolicyEngine(context: Context) {
             lastSuspendedPackages = store.getLastSuspendedPackages(),
             restrictions = restrictions,
             vpnActive = isVpnActive(),
-            vpnRequiredForNuclear = false,
             vpnLockdownRequired = shouldEnforceVpnLockdown(external.policyControls.globalControls, appContext.packageName),
             vpnLastError = VpnStatusStore(appContext).getLastError(),
             alwaysOnVpnPackage = runCatching { facade.getAlwaysOnVpnPackage() }.getOrNull(),
@@ -620,15 +619,6 @@ class PolicyEngine(context: Context) {
                 emergencyApps = emergencyApps
             )
         }
-        val vpnRequiredForThisApply = false
-        if (vpnRequiredForThisApply && !isVpnActive()) {
-            return failureResult(
-                message = "VPN is required before enabling Nuclear mode",
-                stateMode = rollbackMode,
-                emergencyApps = emergencyApps
-            )
-        }
-
         val trackedPackages = sanitizeTrackedPackages()
         val state = evaluator.evaluate(
             mode = normalizedTargetMode,
@@ -662,8 +652,7 @@ class PolicyEngine(context: Context) {
 
         val applyResult = applier.apply(state, hostActivity)
         val verification = applier.verify(state, hostActivity)
-        val vpnSatisfied = !vpnRequiredForThisApply || isVpnActive()
-        val success = applyResult.errors.isEmpty() && verification.passed && vpnSatisfied
+        val success = applyResult.errors.isEmpty() && verification.passed
         if (success) {
             store.setDesiredMode(normalizedTargetMode)
             store.setEmergencyApps(
@@ -682,7 +671,6 @@ class PolicyEngine(context: Context) {
         val errorMessage = buildList {
             addAll(applyResult.errors)
             addAll(verification.issues)
-            if (!vpnSatisfied) add("VPN not active")
         }.joinToString(" | ")
         store.recordApply(state, applyResult, verification, errorMessage, appContext.packageName)
         FocusLog.w(FocusEventId.MODE_CHANGE_FAIL, "Apply failed mode=$targetMode error=$errorMessage")
@@ -1366,18 +1354,15 @@ class PolicyEngine(context: Context) {
             touchGrassBreakUntilMs: Long?,
             nowMs: Long
         ): ModeState {
-            if (!FocusConfig.enableNuclearMode) return ModeState.NORMAL
-
-            // Touch-grass break is modeled as a temporary relaxation window.
-            // If it is active, do not escalate/maintain NUCLEAR mode via schedule.
-            val touchGrassBreakActive = touchGrassBreakUntilMs?.let { it > nowMs } == true
-            if (touchGrassBreakActive) return ModeState.NORMAL
-
-            return if (manualMode == ModeState.NUCLEAR || scheduleComputed) {
-                ModeState.NUCLEAR
-            } else {
-                ModeState.NORMAL
-            }
+            @Suppress("UNUSED_PARAMETER")
+            manualMode
+            @Suppress("UNUSED_PARAMETER")
+            scheduleComputed
+            @Suppress("UNUSED_PARAMETER")
+            touchGrassBreakUntilMs
+            @Suppress("UNUSED_PARAMETER")
+            nowMs
+            return ModeState.NORMAL
         }
 
         internal fun encodeSingleAppScheduleTarget(packageName: String): String = "app:$packageName"
