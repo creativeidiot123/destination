@@ -253,25 +253,27 @@ object EffectivePolicyEvaluator {
             addReason(pkg = evaluation.packageName, reason = "APP:${evaluation.baselineReason.name}")
         }
 
-        strictInstallBlockedPackages
+        val normalizedStrictInstall = strictInstallBlockedPackages
             .asSequence()
             .map(String::trim)
             .filter(String::isNotBlank)
             .filterNot(alwaysAllowedPackages::contains)
-            .forEach { pkg ->
-                addReason(pkg = pkg, reason = EffectiveBlockReason.STRICT_INSTALL.name)
-            }
+            .toSet()
+
+        normalizedStrictInstall.forEach { pkg ->
+            addReason(pkg = pkg, reason = EffectiveBlockReason.STRICT_INSTALL.name)
+        }
 
         val effectiveBlockedPackages = linkedSetOf<String>().apply {
             addAll(scheduledBlocked)
             addAll(usageBlocked)
-            addAll(strictInstallBlockedPackages)
+            addAll(normalizedStrictInstall)
         }
         val reasonSummary = groupEvaluations.firstOrNull { it.effectiveBlocked }?.let { "${it.groupId}:${it.baselineReason.name}" }
             ?: appEvaluations.firstOrNull { it.effectiveBlocked }?.let { "${it.packageName}:${it.baselineReason.name}" }
 
         FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ â”€â”€ SUMMARY â”€â”€")
-        FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ scheduledBlocked=${scheduledBlocked.size} usageBlocked=${usageBlocked.size} strictInstall=${strictInstallBlockedPackages.size}")
+        FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ scheduledBlocked=${scheduledBlocked.size} usageBlocked=${usageBlocked.size} strictInstall=${normalizedStrictInstall.size}")
         FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ effectiveBlockedTotal=${effectiveBlockedPackages.size} blockedGroupIds=${effectiveGroupIds.size}")
         if (effectiveBlockedPackages.isNotEmpty()) {
             FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ blockedPkgs=${effectiveBlockedPackages.joinToString(",")}")
@@ -288,7 +290,7 @@ object EffectivePolicyEvaluator {
             appEvaluations = appEvaluations,
             scheduledBlockedPackages = scheduledBlocked,
             usageBlockedPackages = usageBlocked,
-            strictInstallBlockedPackages = strictInstallBlockedPackages,
+            strictInstallBlockedPackages = normalizedStrictInstall,
             effectiveBlockedPackages = effectiveBlockedPackages,
             effectiveBlockedGroupIds = effectiveGroupIds,
             strictInstallActiveGroupIds = groupEvaluations.filter { it.strictInstallActive }.mapTo(linkedSetOf()) { it.groupId },

@@ -42,12 +42,11 @@ class PolicyEvaluator(
             }
             val recoveryReasonsByPackage = recoveryReasons.mapValues { setOf(it.value) }
             val allowlistReasons = recoveryAllowlist.associateWith { "usage access recovery" }
-            val managedNetworkPolicy = globalControls.toManagedNetworkPolicy(controllerPackageName)
-            val restrictions = PolicyRestrictions.build(
-                mode = effectiveMode,
-                globalControls = globalControls,
-                managedNetworkPolicy = managedNetworkPolicy
-            )
+        val managedNetworkPolicy = globalControls.toManagedNetworkPolicy(controllerPackageName)
+        val restrictions = PolicyRestrictions.build(
+            globalControls = globalControls,
+            managedNetworkPolicy = managedNetworkPolicy
+        )
             FocusLog.d(FocusEventId.USAGE_ACCESS_CHECK, "│ restrictions=${restrictions.size} managedNetwork=$managedNetworkPolicy")
             FocusLog.d(FocusEventId.USAGE_ACCESS_CHECK, "└── PolicyEvaluator.evaluate() END (recovery lockdown) ──")
             return PolicyState(
@@ -170,7 +169,6 @@ class PolicyEvaluator(
         FocusLog.d(FocusEventId.SUSPEND_TARGET, "│ MERGED suspendTargets=${suspendTargets.size} budget=${budgetBlockedSuspendable.size} alwaysBlocked=${alwaysBlockedSuspendable.size} strict=${strictInstallSuspendable.size}")
 
         val restrictions = PolicyRestrictions.build(
-            mode = effectiveMode,
             globalControls = globalControls,
             managedNetworkPolicy = managedNetworkPolicy
         )

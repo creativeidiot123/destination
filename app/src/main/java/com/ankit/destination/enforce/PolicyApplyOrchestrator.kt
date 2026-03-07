@@ -46,7 +46,7 @@ object PolicyApplyOrchestrator {
             suspendTargets = emptySet(),
             previouslySuspended = emptySet(),
             uninstallProtectedPackages = emptySet(),
-            previouslyUninstallProtected = emptySet(),
+            previouslyUninstallProtectedPackages = emptySet(),
             restrictions = emptySet(),
             enforceRestrictions = false,
             blockSelfUninstall = false,
@@ -115,15 +115,17 @@ object PolicyApplyOrchestrator {
             id = requestId,
             reason = cleanReason,
             hostActivity = hostActivity?.let { WeakReference(it) },
-            callbacks = mutableListOf { outcome ->
+            callbacks = mutableListOf<(ApplyOutcome) -> Unit>().apply {
+                add { outcome ->
                 when {
                     !continuation.isActive -> Unit
                     outcome.error != null -> continuation.resumeWith(Result.failure(outcome.error))
-                    outcome.result != null -> continuation.resume(outcome.result)
+                    outcome.result != null -> continuation.resumeWith(Result.success(outcome.result))
                     else -> continuation.resumeWith(
                         Result.failure(IllegalStateException("Policy apply completed without result"))
                     )
                 }
+            }
             }
         )
         continuation.invokeOnCancellation {

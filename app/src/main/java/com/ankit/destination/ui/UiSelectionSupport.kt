@@ -39,7 +39,7 @@ suspend fun loadInstalledAppOptions(
     includePackageNames: Set<String> = emptySet(),
     launchableOnly: Boolean = true,
     disabledPackageReasons: Map<String, String> = emptyMap()
-): List<AppOption> = withContext(Dispatchers.Default) {
+): List<AppOption> = withContext(Dispatchers.IO) {
     val packageManager = context.packageManager
     val packages = linkedSetOf<String>()
     if (launchableOnly) {

@@ -123,16 +123,27 @@ class IndividualAppsViewModel(
 
 private fun blockMessageFor(rawReason: String?, blocked: Boolean): String? {
     if (!blocked) return null
+
+    val normalized = rawReason
+        ?.trim()
+        ?.uppercase()
+        .orEmpty()
+
     return when {
-        rawReason == EffectiveBlockReason.ALWAYS_BLOCKED.name -> "Always blocked"
-        rawReason == EffectiveBlockReason.STRICT_INSTALL.name -> "Blocked during strict schedule"
-        rawReason == "SCHEDULE_GROUP" || rawReason?.endsWith("_SCHEDULED_BLOCK") == true -> {
+        normalized == EffectiveBlockReason.ALWAYS_BLOCKED.name -> "Always blocked"
+        normalized == EffectiveBlockReason.STRICT_INSTALL.name -> "Blocked during strict schedule"
+        normalized == EffectiveBlockReason.USAGE_ACCESS_RECOVERY_LOCKDOWN.name ->
+            "Blocked - Usage Access recovery required"
+        normalized == "SCHEDULE_GROUP" ||
+            normalized.contains("SCHEDULED_BLOCK") ||
+            normalized.endsWith("_SCHEDULED_BLOCK") -> {
             "Scheduled block active"
         }
-        rawReason == "BUDGET" ||
-            rawReason?.endsWith("_HOURLY_CAP") == true ||
-            rawReason?.endsWith("_DAILY_CAP") == true -> "Usage limit reached"
-        rawReason?.endsWith("_OPENS_CAP") == true -> "Launch limit reached"
+        normalized == "BUDGET" ||
+            normalized.contains("USAGE_BLOCK") ||
+            normalized.contains("HOURLY_CAP") ||
+            normalized.contains("DAILY_CAP") -> "Usage limit reached"
+        normalized.contains("OPENS_CAP") -> "Launch limit reached"
         else -> "Blocked"
     }
 }
