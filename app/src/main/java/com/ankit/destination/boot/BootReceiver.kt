@@ -9,7 +9,7 @@ import com.ankit.destination.enforce.EnforcementExecutor
 import com.ankit.destination.policy.FocusEventId
 import com.ankit.destination.policy.FocusLog
 import com.ankit.destination.policy.PolicyEngine
-import com.ankit.destination.schedule.ScheduleEnforcer
+
 import com.ankit.destination.usage.UsageAccessMonitor
 
 class BootReceiver : BroadcastReceiver() {
@@ -27,7 +27,8 @@ class BootReceiver : BroadcastReceiver() {
                 UsageAccessMonitor.refreshNow(
                     context = context,
                     reason = "boot:$action",
-                    requestPolicyRefreshIfChanged = true
+                    // Boot path will apply policy explicitly; do not trigger a second apply from the monitor.
+                    requestPolicyRefreshIfChanged = false
                 )
                 val engine = PolicyEngine(context)
                 if (!engine.isDeviceOwner()) {
@@ -37,26 +38,16 @@ class BootReceiver : BroadcastReceiver() {
                 }
 
                 FocusLog.i(FocusEventId.BOOT_REAPPLY, "│ Applying policy action=$action attempt=$attempt")
-                val includeBudgets = engine.shouldRunBudgetEvaluation()
-                val scheduleResult = ScheduleEnforcer(context).enforceNow(
-                    trigger = "BootReceiver:$action",
-                    includeBudgets = includeBudgets
-                ).policyResult
-                FocusLog.d(FocusEventId.BOOT_REAPPLY, "│ schedule enforce: success=${scheduleResult.success}")
-                val finalResult = if (!scheduleResult.success) {
-                    FocusLog.d(FocusEventId.BOOT_REAPPLY, "│ schedule failed, reapplying desired mode")
-                    engine.reapplyDesiredMode(reason = action)
-                } else {
-                    scheduleResult
-                }
+                val result = engine.requestApplyNow(reason = "BootReceiver:$action")
+                FocusLog.d(FocusEventId.BOOT_REAPPLY, "│ apply: success=${result.success}")
 
-                if (finalResult.success) {
+                if (result.success) {
                     FocusLog.i(FocusEventId.BOOT_REAPPLY, "└── ✅ Boot reapply SUCCESS")
                     cancelRetry(context)
                 } else {
                     FocusLog.w(FocusEventId.BOOT_REAPPLY, "│ Boot reapply FAILED")
                 }
-                if (!finalResult.success && attempt < RETRY_DELAYS_MS.size) {
+                if (!result.success && attempt < RETRY_DELAYS_MS.size) {
                     FocusLog.w(FocusEventId.BOOT_RETRY, "└── Scheduling retry attempt=${attempt + 1}")
                     scheduleRetry(context, attempt + 1)
                 }

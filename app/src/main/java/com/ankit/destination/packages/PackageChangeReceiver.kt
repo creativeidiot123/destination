@@ -8,7 +8,7 @@ import com.ankit.destination.policy.FocusEventId
 import com.ankit.destination.policy.FocusLog
 import com.ankit.destination.policy.PackageResolver
 import com.ankit.destination.policy.PolicyEngine
-import com.ankit.destination.schedule.ScheduleEnforcer
+
 
 class PackageChangeReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
@@ -110,10 +110,7 @@ class PackageChangeReceiver : BroadcastReceiver() {
 
                 if (shouldEnforce) {
                     FocusLog.i(FocusEventId.PACKAGE_INSTALL_DETECT, "│ enforcing: trigger=$trigger")
-                    ScheduleEnforcer(context).enforceNow(
-                        trigger = trigger,
-                        includeBudgets = engine.shouldRunBudgetEvaluation()
-                    )
+                    engine.requestApplyNow(reason = "PackageChangeReceiver:$trigger")
                 } else {
                     FocusLog.d(FocusEventId.PACKAGE_INSTALL_DETECT, "│ no enforcement needed")
                 }

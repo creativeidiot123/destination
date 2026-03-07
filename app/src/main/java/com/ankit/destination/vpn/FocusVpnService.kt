@@ -332,7 +332,14 @@ class FocusVpnService : VpnService() {
     }
 
     private fun loadBlockedGroupsSnapshot(): Set<String> {
-        return policyStore.getBudgetBlockedGroupIds() + policyStore.getScheduleBlockedGroups()
+        /**
+         * IMPORTANT:
+         * Use the evaluator's effective blocked group IDs (post-emergency override).
+         *
+         * scheduleBlockedGroups is baseline schedule state and can remain populated even when an
+         * emergency unlock is active, causing VPN/domain enforcement to ignore emergency overrides.
+         */
+        return policyStore.getBudgetBlockedGroupIds()
     }
 
     private fun applyBlockedGroupSnapshot(snapshot: Set<String>) {

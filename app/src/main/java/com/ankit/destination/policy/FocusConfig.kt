@@ -11,6 +11,14 @@ object FocusConfig {
         "com.ubercab"
     )
 
+    /**
+     * High-risk kiosk-style lockdown mode.
+     *
+     * Keep DISABLED by default to avoid accidental partial enablement across the codebase.
+     * Only enable after validating provisioning + escape hatches on all supported devices.
+     */
+    const val enableNuclearMode: Boolean = false
+
     // Manual nuclear toggle may require VPN; schedule/touch-grass enforcement should not depend on this.
     const val requireVpnForNuclear: Boolean = false
 

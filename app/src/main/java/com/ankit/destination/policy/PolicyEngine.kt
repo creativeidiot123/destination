@@ -1258,7 +1258,18 @@ class PolicyEngine(context: Context) {
             touchGrassBreakUntilMs: Long?,
             nowMs: Long
         ): ModeState {
-            return ModeState.NORMAL
+            if (!FocusConfig.enableNuclearMode) return ModeState.NORMAL
+
+            // Touch-grass break is modeled as a temporary relaxation window.
+            // If it is active, do not escalate/maintain NUCLEAR mode via schedule.
+            val touchGrassBreakActive = touchGrassBreakUntilMs?.let { it > nowMs } == true
+            if (touchGrassBreakActive) return ModeState.NORMAL
+
+            return if (manualMode == ModeState.NUCLEAR || scheduleComputed) {
+                ModeState.NUCLEAR
+            } else {
+                ModeState.NORMAL
+            }
         }
 
         internal fun encodeSingleAppScheduleTarget(packageName: String): String = "app:$packageName"

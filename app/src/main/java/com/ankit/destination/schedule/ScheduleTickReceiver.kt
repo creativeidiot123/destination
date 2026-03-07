@@ -11,6 +11,12 @@ import com.ankit.destination.usage.UsageAccessMonitor
 
 class ScheduleTickReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
+        val action = intent?.action ?: AlarmScheduler.ACTION_SCHEDULE_TICK
+        val trigger = when (action) {
+            AlarmScheduler.ACTION_USAGE_ACCESS_POLL -> "usage_access_poll"
+            AlarmScheduler.ACTION_SCHEDULE_TICK -> "schedule_tick"
+            else -> action
+        }
         val pending = goAsync()
         EnforcementExecutor.executeLatest(
             key = EXECUTOR_KEY,
@@ -19,14 +25,13 @@ class ScheduleTickReceiver : BroadcastReceiver() {
             try {
                 UsageAccessMonitor.refreshNow(
                     context = context,
-                    reason = "schedule_tick",
-                    requestPolicyRefreshIfChanged = true
+                    reason = trigger,
+                    // Receiver will apply policy explicitly; avoid duplicate apply via monitor.
+                    requestPolicyRefreshIfChanged = false
                 )
-                val includeBudgets = PolicyEngine(context).shouldRunBudgetEvaluation()
-                ScheduleEnforcer(context).enforceNow(
-                    trigger = "AlarmTick",
-                    includeBudgets = includeBudgets
-                )
+                val engine = PolicyEngine(context)
+                if (!engine.isDeviceOwner()) return@executeLatest
+                engine.requestApplyNow(reason = "ScheduleTickReceiver:$trigger")
             } catch (t: Throwable) {
                 FocusLog.e(FocusEventId.SCHEDULE_ENFORCE_FAIL, "Schedule tick handling failed", t)
             } finally {
