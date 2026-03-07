@@ -38,8 +38,6 @@ This is what makes Destination actually serious. Every known escape hatch is clo
 | **Creating New Users** | User creation is disabled — no "work profile" workarounds |
 | **App Cloners** | Cloned package detection prevents duplicate-app bypasses |
 | **Sideloading New Apps** | Install blocked entirely during strict schedules |
-| **VPN Changes** | VPN configuration is locked — can't swap to a bypass VPN |
-| **DNS Changes** | Private DNS settings are locked — your DNS-level content filters stay in place |
 
 > If you're the type to find loopholes, you're also the type who needs this app most.
 
@@ -49,13 +47,14 @@ This is what makes Destination actually serious. Every known escape hatch is clo
 
 | Feature | What it does |
 |---|---|
-| 🔒 **System-Level Suspension** | Blocks apps via `setPackagesSuspended()` — fully inaccessible, not just hidden |
 | ⏱️ **Usage Budgets** | Daily caps, hourly caps, or max open counts per app |
 | 📅 **Advanced Scheduling** | Custom recurring schedules for focus sessions or deep work |
 | 🚫 **Strict Install Protection** | Blocks sideloading new apps while a strict schedule is active |
 | 🆘 **Emergency Exemptions** | Always keep your dialer, SMS, and critical apps accessible |
-| 🌐 **VPN & DNS Lock** | Locks VPN and Private DNS settings — pair with any content-filtering DNS and it stays locked, no switching around it |
-| 🔍 **Deep Diagnostics** | Logs exactly *why* each app is suspended — no ambiguity, no conflicts |
+| 🌐 **VPN & DNS Lock** | Pornography addicts hate this. Locks VPN and Private DNS settings — pair with any content-filtering DNS and it stays locked, no switching around it |
+| ⏳ **Individual App Time Limits** | Set a hard daily screen time cap per app — Instagram gets 15 minutes, it gets 15 minutes, not a second more |
+| 👥 **Group Time Limits** | Bundle apps (e.g. all social media) under a shared time budget — open Instagram or TikTok or Twitter, it all counts against the same pool |
+| 🔒 **Self-Protection Lock** | Destination protects itself and other blocking/parental control apps from being uninstalled, force-stopped, or tampered with — your past self can't sabotage your future self |
 
 ---
 
