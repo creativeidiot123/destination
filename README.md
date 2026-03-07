@@ -1,91 +1,99 @@
 <p align="center">
-  <img src="app/src/main/res/mipmap-xxxhdpi/ic_launcher.png" alt="Destination App Icon" width="128" height="128">
+  <img src="app/src/main/res/mipmap-xxxhdpi/ic_launcher.png" alt="Destination App Icon" width="120" height="120">
 </p>
 
 <h1 align="center">Destination 🛡️</h1>
 
 <p align="center">
-  <strong>System-level digital wellbeing and app blocking for Android.</strong>
+  <strong>Un-bypassable app blocking for Android. No loopholes. No excuses.</strong>
 </p>
 
 <p align="center">
-  Built for people who want restrictions that are durable, enforceable, and hard to bypass.
+  <img src="https://img.shields.io/badge/Platform-Android-3DDC84?style=flat-square&logo=android&logoColor=white" />
+  <img src="https://img.shields.io/badge/Language-Kotlin-7F52FF?style=flat-square&logo=kotlin&logoColor=white" />
+  <img src="https://img.shields.io/badge/UI-Jetpack%20Compose-4285F4?style=flat-square&logo=jetpackcompose&logoColor=white" />
+  <img src="https://img.shields.io/badge/Privilege-Device%20Owner-FF6B35?style=flat-square" />
 </p>
 
 ---
 
-## Overview
+Most app blockers are a joke — tap twice, switch launchers, done. **Destination is different.**
 
-**Destination** is a high-friction digital wellbeing app for Android that blocks apps at the **operating system level**.
-
-Unlike typical app blockers that depend on accessibility overlays, soft warnings, or easy-to-disable permissions, Destination is designed to run as a **Device Owner** and enforce restrictions using Android’s `DevicePolicyManager`.
-
-That means when a rule becomes active, the target app is not just covered or discouraged — it is **actually suspended by the OS**.
-
-This makes blocking far more reliable, persistent, and resistant to common bypass methods.
+It runs as a **Device Owner**, using Android's `DevicePolicyManager` to *physically suspend packages at the OS level*. When an app is blocked, it doesn't show up. It doesn't launch. It's gone — until you say otherwise.
 
 ---
 
-## Why Destination?
+## ✨ Features
 
-Most digital wellbeing apps are easy to break:
-
-- disable accessibility
-- force stop the app
-- revoke permissions
-- install alternatives
-- exploit timing gaps or state drift
-
-Destination is built to avoid that pattern.
-
-It focuses on **deterministic enforcement**, **strict rule evaluation**, and **real device-level control** so that blocking remains effective when it actually matters.
+| Feature | What it does |
+|---|---|
+| 🔒 **System-Level Suspension** | Blocks apps via `setPackagesSuspended()` — fully inaccessible, not just hidden |
+| ⏱️ **Usage Budgets** | Daily caps, hourly caps, or max open counts per app |
+| 📅 **Advanced Scheduling** | Custom recurring schedules for focus sessions or deep work |
+| 🚫 **Strict Install Protection** | Blocks sideloading new apps while a strict schedule is active |
+| 🆘 **Emergency Exemptions** | Always keep your dialer, SMS, and critical apps accessible |
+| 🔍 **Deep Diagnostics** | Logs exactly *why* each app is suspended — no ambiguity, no conflicts |
 
 ---
 
-## Features
+## 🚀 Setup (ADB Required)
 
-### OS-level app blocking
-Blocks apps using `DevicePolicyManager.setPackagesSuspended()` so restricted apps become inaccessible at the system level.
+> Device Owner access requires ADB. No factory reset needed — just temporarily remove your accounts.
 
-### Usage budgets
-Set limits based on:
+### Step 1 — Install the APK
 
-- daily usage time
-- hourly usage time
-- app open count
+Download and install the [latest release APK](../../releases/latest).
 
-### Scheduling
-Create recurring schedules for focus time, work sessions, sleep windows, or custom blocking periods.
+### Step 2 — Remove Accounts Temporarily
 
-### Strict install protection
-During strict schedules, Destination can prevent workaround behavior by blocking or controlling newly installed apps.
+Go to **Settings → Passwords & Accounts** and remove all accounts (Google, etc.). You'll re-add them right after.
 
-### Emergency safeguards
-Protect critical device usability with emergency-safe handling for apps like the default dialer, SMS, or other essential tools.
+Verify no accounts remain:
+```bash
+adb shell dumpsys account
+```
 
-### Deterministic policy evaluation
-Rules are evaluated through a structured policy pipeline so overlapping schedules, limits, and app/group rules resolve consistently.
+> If any apps still show accounts, uninstall them temporarily.
 
-### Diagnostics and state tracking
-Track why an app is blocked, what rule triggered it, and how the current enforcement state was derived.
-
----
-
-## Installation & Setup
-
-Because Destination uses system-level Android management APIs, it must be provisioned as a **Device Owner** through ADB.
-
-> [!IMPORTANT]
-> Standard Android Device Owner provisioning usually requires a factory reset.  
-> In many cases, you can provision without wiping the device by temporarily removing all accounts first.
-
----
-
-## ADB Provisioning Steps
-
-### 1. Install the app
-Build and install the latest APK on your Android device.
+### Step 3 — Set Device Owner
 
 ```bash
-# install your latest release APK
-adb install app-release.apk
+adb shell dpm set-device-owner com.ankit.destination/.admin.FocusDeviceAdminReceiver
+```
+
+### Step 4 — Grant Usage Access
+
+```bash
+adb shell cmd appops set com.ankit.destination GET_USAGE_STATS allow
+```
+
+### Step 5 — You're done
+
+Open Destination, then re-add your Google and device accounts. That's it.
+
+---
+
+## 🛠️ Tech Stack
+
+```
+Language       → Kotlin (100%)
+UI             → Jetpack Compose + Material 3
+Async          → Coroutines & Flow
+Storage        → Room (SQLite) via PolicyStore
+Privilege      → DevicePolicyManager (Device Owner) + Shizuku API
+Architecture   → PolicyEngine → EffectivePolicyEvaluator → PolicyApplier
+```
+
+---
+
+## ⚠️ Important Notes
+
+- This app **requires Device Owner provisioning** — standard accessibility-based blockers are not used by design.
+- Removing Device Owner status will disable all blocking. That's the point — it's a commitment, not a suggestion.
+- Keep a backup of your ADB setup in case you need to remove Device Owner later via `adb shell dpm remove-active-admin`.
+
+---
+
+## 📄 License
+
+Licensed under the terms in [LICENSE](LICENSE).
