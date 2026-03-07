@@ -6,6 +6,7 @@ import android.content.Intent
 import com.ankit.destination.enforce.EnforcementExecutor
 import com.ankit.destination.policy.FocusEventId
 import com.ankit.destination.policy.FocusLog
+import com.ankit.destination.policy.PolicyEngine
 import com.ankit.destination.usage.UsageAccessMonitor
 
 class ScheduleEventReceiver : BroadcastReceiver() {
@@ -20,9 +21,12 @@ class ScheduleEventReceiver : BroadcastReceiver() {
                 UsageAccessMonitor.refreshNow(
                     context = context,
                     reason = "schedule_event:$trigger",
-                    requestPolicyRefreshIfChanged = true
+                    // Receiver will apply policy explicitly; avoid duplicate apply via monitor.
+                    requestPolicyRefreshIfChanged = false
                 )
-                ScheduleEnforcer(context).enforceNow(trigger)
+                val engine = PolicyEngine(context)
+                if (!engine.isDeviceOwner()) return@executeLatest
+                engine.requestApplyNow(reason = "ScheduleEventReceiver:$trigger")
             } catch (t: Throwable) {
                 FocusLog.e(FocusEventId.SCHEDULE_ENFORCE_FAIL, "Schedule event handling failed trigger=$trigger", t)
             } finally {

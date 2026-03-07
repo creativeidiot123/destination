@@ -416,7 +416,7 @@ class PolicyStore(context: Context) {
         val parsed = runCatching { ModeState.valueOf(raw) }.getOrDefault(ModeState.NORMAL)
         return when (parsed) {
             ModeState.NORMAL -> ModeState.NORMAL
-            ModeState.NUCLEAR -> ModeState.NORMAL
+            ModeState.NUCLEAR -> if (FocusConfig.enableNuclearMode) ModeState.NUCLEAR else ModeState.NORMAL
         }
     }
 

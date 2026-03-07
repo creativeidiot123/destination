@@ -7,7 +7,7 @@ import com.ankit.destination.enforce.EnforcementExecutor
 import com.ankit.destination.policy.FocusEventId
 import com.ankit.destination.policy.FocusLog
 import com.ankit.destination.policy.PolicyEngine
-import com.ankit.destination.schedule.ScheduleEnforcer
+
 import com.ankit.destination.usage.UsageAccessMonitor
 
 class UserUnlockedReceiver : BroadcastReceiver() {
@@ -22,16 +22,14 @@ class UserUnlockedReceiver : BroadcastReceiver() {
                 UsageAccessMonitor.refreshNow(
                     context = context,
                     reason = "user_unlocked",
-                    requestPolicyRefreshIfChanged = true
+                    // This receiver triggers an explicit apply; avoid duplicate monitor-driven apply.
+                    requestPolicyRefreshIfChanged = false
                 )
                 val engine = PolicyEngine(context)
                 if (!engine.isDeviceOwner()) {
                     return@executeLatest
                 }
-                ScheduleEnforcer(context).enforceNow(
-                    trigger = trigger,
-                    includeBudgets = engine.shouldRunBudgetEvaluation()
-                )
+                engine.requestApplyNow(reason = "UserUnlockedReceiver:$trigger")
             } catch (t: Throwable) {
                 FocusLog.e(FocusEventId.BOOT_RETRY, "User unlock reapply failed", t)
             } finally {

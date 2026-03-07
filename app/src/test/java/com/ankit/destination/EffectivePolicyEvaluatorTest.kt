@@ -86,6 +86,10 @@ class EffectivePolicyEvaluatorTest {
 
         assertTrue(result.effectiveBlockedPackages.contains("fresh.app"))
         assertFalse(result.effectiveBlockedPackages.contains("a"))
+        // Emergency must remove the group from effective blocked sets (post-override),
+        // even though strict-install protections remain active.
+        assertTrue(result.effectiveBlockedGroupIds.isEmpty())
+        assertTrue(result.scheduledBlockedPackages.isEmpty())
         assertEquals(setOf("study"), result.strictInstallActiveGroupIds)
         assertEquals(EffectiveBlockReason.STRICT_INSTALL.name, result.primaryReasonByPackage["fresh.app"])
     }

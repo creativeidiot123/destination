@@ -28,7 +28,7 @@ class PolicyEvaluator(
         FocusLog.d(FocusEventId.POLICY_STATE_COMPUTED, "│ lockReason=$lockReason touchGrassBreak=$touchGrassBreakActive prevSuspended=${previouslySuspended.size}")
         FocusLog.d(FocusEventId.USAGE_ACCESS_CHECK, "│ usageAccess: granted=${usageAccessComplianceState.usageAccessGranted} lockdownEligible=${usageAccessComplianceState.lockdownEligible} lockdownActive=${usageAccessComplianceState.lockdownActive}")
 
-        val effectiveMode = ModeState.NORMAL
+        val effectiveMode = if (FocusConfig.enableNuclearMode) mode else ModeState.NORMAL
         if (usageAccessComplianceState.lockdownActive) {
             FocusLog.i(FocusEventId.USAGE_ACCESS_CHECK, "│ ⚠️ USAGE ACCESS RECOVERY LOCKDOWN ACTIVE — reason=${usageAccessComplianceState.reason}")
             val recoveryAllowlist = usageAccessComplianceState.recoveryAllowlist
@@ -126,7 +126,7 @@ class PolicyEvaluator(
             managedNetworkPolicy = managedNetworkPolicy
         )
         FocusLog.d(FocusEventId.LOCK_CALC, "│ restrictions=${restrictions.size}: ${restrictions.joinToString(",")}")
-        val manualNuclear = false
+        val manualNuclear = FocusConfig.enableNuclearMode && mode == ModeState.NUCLEAR
         val uninstallProtectedTargets = uninstallProtectedApps
             .asSequence()
             .map(String::trim)
