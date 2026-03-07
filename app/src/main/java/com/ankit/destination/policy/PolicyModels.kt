@@ -1,6 +1,7 @@
 package com.ankit.destination.policy
 
 import com.ankit.destination.data.GlobalControls
+
 enum class ModeState {
     NORMAL,
     NUCLEAR
@@ -40,6 +41,7 @@ data class PolicyState(
     val budgetBlockedPackages: Set<String>,
     val touchGrassBreakActive: Boolean,
     val primaryReasonByPackage: Map<String, String>,
+    val blockReasonsByPackage: Map<String, Set<String>> = emptyMap(),
     val globalControls: GlobalControls
 )
 

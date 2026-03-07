@@ -60,7 +60,7 @@ object ScheduleEvaluator {
         FocusLog.d(FocusEventId.SCHEDULE_EVAL, "└── nextTransition=${next} reason=$reason")
 
         return ScheduleDecision(
-            shouldLock = false,
+            shouldLock = active.isNotEmpty(),
             strictActive = strictActive,
             blockedGroupIds = blockedGroupIds,
             reason = reason,

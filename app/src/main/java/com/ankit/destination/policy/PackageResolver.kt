@@ -99,11 +99,14 @@ class PackageResolver(private val context: Context) {
     fun filterSuspendable(packages: Set<String>, allowlist: Set<String>): Set<String> {
         val result = packages
             .asSequence()
+            .map(String::trim)
+            .filter(String::isNotBlank)
             .filterNot { pkg ->
                 val inAllowlist = allowlist.contains(pkg)
                 if (inAllowlist) FocusLog.v(FocusEventId.SUSPEND_TARGET, "filterSuspendable: $pkg skipped (in allowlist)")
                 inAllowlist
             }
+            .filter { isInstalled(it) }
             .filterNot { pkg ->
                 val prot = isProtectedPackage(pkg)
                 if (prot) FocusLog.v(FocusEventId.SUSPEND_TARGET, "filterSuspendable: $pkg skipped (protected)")
@@ -299,6 +302,5 @@ class PackageResolver(private val context: Context) {
         }
     }
 }
-
 
 

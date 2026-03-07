@@ -1,4 +1,4 @@
-package com.ankit.destination.policy
+﻿package com.ankit.destination.policy
 
 import com.ankit.destination.data.EmergencyTargetType
 
@@ -85,6 +85,7 @@ data class EffectivePolicyEvaluation(
     val effectiveBlockedPackages: Set<String>,
     val effectiveBlockedGroupIds: Set<String>,
     val strictInstallActiveGroupIds: Set<String>,
+    val blockReasonsByPackage: Map<String, Set<String>>,
     val primaryReasonByPackage: Map<String, String>,
     val usageReasonSummary: String?
 )
@@ -99,15 +100,15 @@ object EffectivePolicyEvaluator {
         strictInstallBlockedPackages: Set<String>,
         alwaysAllowedPackages: Set<String>
     ): EffectivePolicyEvaluation {
-        FocusLog.d(FocusEventId.GROUP_EVAL, "┌── EffectivePolicyEvaluator.evaluate() START ──")
-        FocusLog.d(FocusEventId.GROUP_EVAL, "│ groups=${groupPolicies.size} apps=${appPolicies.size} emergencyStates=${emergencyStates.size} strictInstall=${strictInstallBlockedPackages.size} alwaysAllowed=${alwaysAllowedPackages.size}")
-        FocusLog.d(FocusEventId.USAGE_READ, "│ usageTodayMs entries=${usageInputs.usedTodayMs.size} usedHourMs entries=${usageInputs.usedHourMs.size} opensToday entries=${usageInputs.opensToday.size}")
+        FocusLog.d(FocusEventId.GROUP_EVAL, "â”Œâ”€â”€ EffectivePolicyEvaluator.evaluate() START â”€â”€")
+        FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ groups=${groupPolicies.size} apps=${appPolicies.size} emergencyStates=${emergencyStates.size} strictInstall=${strictInstallBlockedPackages.size} alwaysAllowed=${alwaysAllowedPackages.size}")
+        FocusLog.d(FocusEventId.USAGE_READ, "â”‚ usageTodayMs entries=${usageInputs.usedTodayMs.size} usedHourMs entries=${usageInputs.usedHourMs.size} opensToday entries=${usageInputs.opensToday.size}")
 
         val stateByKey = emergencyStates.associateBy { it.targetType.name to it.targetId.trim() }
         if (emergencyStates.isNotEmpty()) {
             emergencyStates.forEach { es ->
                 val remainMs = es.activeUntilEpochMs?.let { it - nowMs }
-                FocusLog.d(FocusEventId.BUDGET_EMERGENCY, "│ emergencyState: type=${es.targetType} id=${es.targetId} unlocksUsed=${es.unlocksUsedToday} activeUntil=${es.activeUntilEpochMs} remainMs=$remainMs")
+                FocusLog.d(FocusEventId.BUDGET_EMERGENCY, "â”‚ emergencyState: type=${es.targetType} id=${es.targetId} unlocksUsed=${es.unlocksUsedToday} activeUntil=${es.activeUntilEpochMs} remainMs=$remainMs")
             }
         }
 
@@ -123,7 +124,7 @@ object EffectivePolicyEvaluator {
                 .filterNot(alwaysAllowedPackages::contains)
                 .toSet()
             if (members.isEmpty()) {
-                FocusLog.v(FocusEventId.GROUP_EVAL, "│ group=$cleanGroupId SKIPPED (no eligible members after filtering alwaysAllowed)")
+                FocusLog.v(FocusEventId.GROUP_EVAL, "â”‚ group=$cleanGroupId SKIPPED (no eligible members after filtering alwaysAllowed)")
                 return@mapNotNull null
             }
 
@@ -146,12 +147,12 @@ object EffectivePolicyEvaluator {
             val usedHourMin = usedHour / 60_000L
             val dailyLimitMin = if (group.dailyLimitMs > 0L) group.dailyLimitMs / 60_000L else -1L
             val hourlyLimitMin = if (group.hourlyLimitMs > 0L) group.hourlyLimitMs / 60_000L else -1L
-            FocusLog.d(FocusEventId.GROUP_EVAL, "│ ┌─ GROUP: $cleanGroupId (priority=${group.priorityIndex}) members=${members.size} strict=${group.strictEnabled} schedBlocked=${group.scheduleBlocked}")
-            FocusLog.d(FocusEventId.GROUP_EVAL, "│ │ usage: dayUsed=${usedDayMin}min/${dailyLimitMin}min hourUsed=${usedHourMin}min/${hourlyLimitMin}min opens=$opens/${group.opensPerDay}")
-            FocusLog.d(FocusEventId.GROUP_EVAL, "│ │ baseline=${baselineReason.name} blocked=$baselineBlocked")
-            FocusLog.d(FocusEventId.GROUP_EVAL, "│ │ emergency: enabled=${group.emergencyConfig.enabled} active=$emergencyActive remainingUnlocks=$remainingUnlocks untilMs=${state?.activeUntilEpochMs}")
+            FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ â”Œâ”€ GROUP: $cleanGroupId (priority=${group.priorityIndex}) members=${members.size} strict=${group.strictEnabled} schedBlocked=${group.scheduleBlocked}")
+            FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ â”‚ usage: dayUsed=${usedDayMin}min/${dailyLimitMin}min hourUsed=${usedHourMin}min/${hourlyLimitMin}min opens=$opens/${group.opensPerDay}")
+            FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ â”‚ baseline=${baselineReason.name} blocked=$baselineBlocked")
+            FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ â”‚ emergency: enabled=${group.emergencyConfig.enabled} active=$emergencyActive remainingUnlocks=$remainingUnlocks untilMs=${state?.activeUntilEpochMs}")
             val effectiveBlocked = baselineBlocked && !emergencyActive
-            FocusLog.d(FocusEventId.GROUP_EVAL, "│ └─ EFFECTIVE: ${if (effectiveBlocked) "🔴 BLOCKED" else "🟢 ALLOWED"} members=${members.joinToString(",")}")
+            FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ â””â”€ EFFECTIVE: ${if (effectiveBlocked) "ðŸ”´ BLOCKED" else "ðŸŸ¢ ALLOWED"} members=${members.joinToString(",")}")
 
             GroupPolicyEvaluation(
                 groupId = cleanGroupId,
@@ -171,7 +172,7 @@ object EffectivePolicyEvaluator {
             val packageName = policy.packageName.trim()
             if (packageName.isBlank() || alwaysAllowedPackages.contains(packageName)) {
                 if (alwaysAllowedPackages.contains(packageName)) {
-                    FocusLog.v(FocusEventId.APP_EVAL, "│ app=$packageName SKIPPED (always-allowed)")
+                    FocusLog.v(FocusEventId.APP_EVAL, "â”‚ app=$packageName SKIPPED (always-allowed)")
                 }
                 return@mapNotNull null
             }
@@ -197,12 +198,12 @@ object EffectivePolicyEvaluator {
             val usedHourMin = usedHourMs / 60_000L
             val dailyLimitMin = if (policy.dailyLimitMs > 0L) policy.dailyLimitMs / 60_000L else -1L
             val hourlyLimitMin = if (policy.hourlyLimitMs > 0L) policy.hourlyLimitMs / 60_000L else -1L
-            FocusLog.d(FocusEventId.APP_EVAL, "│ ┌─ APP: $packageName schedBlocked=${policy.scheduleBlocked}")
-            FocusLog.d(FocusEventId.APP_EVAL, "│ │ usage: dayUsed=${usedDayMin}min/${dailyLimitMin}min hourUsed=${usedHourMin}min/${hourlyLimitMin}min opens=$opensCount/${policy.opensPerDay}")
-            FocusLog.d(FocusEventId.APP_EVAL, "│ │ baseline=${baselineReason.name} blocked=$baselineBlocked")
-            FocusLog.d(FocusEventId.APP_EVAL, "│ │ emergency: enabled=${policy.emergencyConfig.enabled} active=$emergencyActive remainingUnlocks=$remainingUnlocks")
+            FocusLog.d(FocusEventId.APP_EVAL, "â”‚ â”Œâ”€ APP: $packageName schedBlocked=${policy.scheduleBlocked}")
+            FocusLog.d(FocusEventId.APP_EVAL, "â”‚ â”‚ usage: dayUsed=${usedDayMin}min/${dailyLimitMin}min hourUsed=${usedHourMin}min/${hourlyLimitMin}min opens=$opensCount/${policy.opensPerDay}")
+            FocusLog.d(FocusEventId.APP_EVAL, "â”‚ â”‚ baseline=${baselineReason.name} blocked=$baselineBlocked")
+            FocusLog.d(FocusEventId.APP_EVAL, "â”‚ â”‚ emergency: enabled=${policy.emergencyConfig.enabled} active=$emergencyActive remainingUnlocks=$remainingUnlocks")
             val effectiveBlocked = baselineBlocked && !emergencyActive
-            FocusLog.d(FocusEventId.APP_EVAL, "│ └─ EFFECTIVE: ${if (effectiveBlocked) "🔴 BLOCKED" else "🟢 ALLOWED"}")
+            FocusLog.d(FocusEventId.APP_EVAL, "â”‚ â””â”€ EFFECTIVE: ${if (effectiveBlocked) "ðŸ”´ BLOCKED" else "ðŸŸ¢ ALLOWED"}")
 
             AppPolicyEvaluation(
                 packageName = packageName,
@@ -217,8 +218,15 @@ object EffectivePolicyEvaluator {
 
         val scheduledBlocked = linkedSetOf<String>()
         val usageBlocked = linkedSetOf<String>()
+        val blockReasons = linkedMapOf<String, LinkedHashSet<String>>()
         val effectiveGroupIds = linkedSetOf<String>()
         val primaryReason = linkedMapOf<String, String>()
+
+        fun addReason(pkg: String, reason: String) {
+            val normalized = pkg.trim()
+            if (normalized.isBlank() || reason.isBlank()) return
+            blockReasons.getOrPut(normalized) { linkedSetOf() }.add(reason)
+        }
 
         groupEvaluations.forEach { evaluation ->
             if (!evaluation.effectiveBlocked) return@forEach
@@ -231,7 +239,7 @@ object EffectivePolicyEvaluator {
                 else -> Unit
             }
             evaluation.members.forEach { pkg ->
-                primaryReason.putIfAbsent(pkg, "GROUP_${evaluation.baselineReason.name}")
+                addReason(pkg = pkg, reason = "GROUP:${evaluation.groupId}:${evaluation.baselineReason.name}")
             }
         }
 
@@ -242,7 +250,7 @@ object EffectivePolicyEvaluator {
             } else {
                 usageBlocked += evaluation.packageName
             }
-            primaryReason.putIfAbsent(evaluation.packageName, "APP_${evaluation.baselineReason.name}")
+            addReason(pkg = evaluation.packageName, reason = "APP:${evaluation.baselineReason.name}")
         }
 
         strictInstallBlockedPackages
@@ -251,7 +259,7 @@ object EffectivePolicyEvaluator {
             .filter(String::isNotBlank)
             .filterNot(alwaysAllowedPackages::contains)
             .forEach { pkg ->
-                primaryReason.putIfAbsent(pkg, EffectiveBlockReason.STRICT_INSTALL.name)
+                addReason(pkg = pkg, reason = EffectiveBlockReason.STRICT_INSTALL.name)
             }
 
         val effectiveBlockedPackages = linkedSetOf<String>().apply {
@@ -262,18 +270,18 @@ object EffectivePolicyEvaluator {
         val reasonSummary = groupEvaluations.firstOrNull { it.effectiveBlocked }?.let { "${it.groupId}:${it.baselineReason.name}" }
             ?: appEvaluations.firstOrNull { it.effectiveBlocked }?.let { "${it.packageName}:${it.baselineReason.name}" }
 
-        FocusLog.d(FocusEventId.GROUP_EVAL, "│ ── SUMMARY ──")
-        FocusLog.d(FocusEventId.GROUP_EVAL, "│ scheduledBlocked=${scheduledBlocked.size} usageBlocked=${usageBlocked.size} strictInstall=${strictInstallBlockedPackages.size}")
-        FocusLog.d(FocusEventId.GROUP_EVAL, "│ effectiveBlockedTotal=${effectiveBlockedPackages.size} blockedGroupIds=${effectiveGroupIds.size}")
+        FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ â”€â”€ SUMMARY â”€â”€")
+        FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ scheduledBlocked=${scheduledBlocked.size} usageBlocked=${usageBlocked.size} strictInstall=${strictInstallBlockedPackages.size}")
+        FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ effectiveBlockedTotal=${effectiveBlockedPackages.size} blockedGroupIds=${effectiveGroupIds.size}")
         if (effectiveBlockedPackages.isNotEmpty()) {
-            FocusLog.d(FocusEventId.GROUP_EVAL, "│ blockedPkgs=${effectiveBlockedPackages.joinToString(",")}")
+            FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ blockedPkgs=${effectiveBlockedPackages.joinToString(",")}")
         }
-        if (primaryReason.isNotEmpty()) {
-            primaryReason.forEach { (pkg, reason) ->
-                FocusLog.v(FocusEventId.GROUP_EVAL, "│ reason: $pkg → $reason")
+        if (blockReasons.isNotEmpty()) {
+            BlockReasonUtils.derivePrimaryByPackage(blockReasons).forEach { (pkg, reason) ->
+                FocusLog.v(FocusEventId.GROUP_EVAL, "â”‚ reason: $pkg â†’ $reason")
             }
         }
-        FocusLog.d(FocusEventId.GROUP_EVAL, "└── EffectivePolicyEvaluator.evaluate() END ──")
+        FocusLog.d(FocusEventId.GROUP_EVAL, "â””â”€â”€ EffectivePolicyEvaluator.evaluate() END â”€â”€")
 
         return EffectivePolicyEvaluation(
             groupEvaluations = groupEvaluations,
@@ -284,8 +292,10 @@ object EffectivePolicyEvaluator {
             effectiveBlockedPackages = effectiveBlockedPackages,
             effectiveBlockedGroupIds = effectiveGroupIds,
             strictInstallActiveGroupIds = groupEvaluations.filter { it.strictInstallActive }.mapTo(linkedSetOf()) { it.groupId },
-            primaryReasonByPackage = primaryReason,
+            blockReasonsByPackage = blockReasons.mapValues { (_, value) -> value.toSet() },
+            primaryReasonByPackage = BlockReasonUtils.derivePrimaryByPackage(blockReasons),
             usageReasonSummary = reasonSummary
         )
     }
 }
+

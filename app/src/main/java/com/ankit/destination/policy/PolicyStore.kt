@@ -156,6 +156,7 @@ class PolicyStore(context: Context) {
         budgetUsageAccessGranted: Boolean,
         budgetNextCheckAtMs: Long?,
         primaryReasonByPackage: Map<String, String>,
+        blockReasonsByPackage: Map<String, Set<String>>,
         clearStrictInstallSuspendedPackages: Boolean
     ) {
         prefs.edit()
@@ -171,6 +172,7 @@ class PolicyStore(context: Context) {
             .putBoolean(KEY_BUDGET_USAGE_ACCESS_GRANTED, budgetUsageAccessGranted)
             .putLong(KEY_BUDGET_NEXT_CHECK_AT, budgetNextCheckAtMs ?: -1L)
             .putString(KEY_PRIMARY_REASON_BY_PACKAGE, encodeMap(primaryReasonByPackage))
+            .putString(KEY_BLOCK_REASONS_BY_PACKAGE, encodeReasonSetMap(blockReasonsByPackage))
             .apply {
                 if (clearStrictInstallSuspendedPackages) {
                     putStringSet(KEY_STRICT_INSTALL_SUSPENDED, emptySet())
@@ -332,6 +334,25 @@ class PolicyStore(context: Context) {
             .toMap()
     }
 
+    fun getBlockReasonsByPackage(): Map<String, Set<String>> {
+        val raw = prefs.getString(KEY_BLOCK_REASONS_BY_PACKAGE, "") ?: ""
+        if (raw.isBlank()) return emptyMap()
+        return raw.lineSequence()
+            .mapNotNull { line ->
+                val idx = line.indexOf('=')
+                if (idx <= 0) return@mapNotNull null
+                val pkg = line.substring(0, idx).trim()
+                val reasons = line.substring(idx + 1)
+                    .split(',')
+                    .asSequence()
+                    .map(String::trim)
+                    .filter(String::isNotBlank)
+                    .toSet()
+                if (pkg.isBlank() || reasons.isEmpty()) null else pkg to reasons
+            }
+            .toMap()
+    }
+
     fun setPrimaryReasonByPackage(reasons: Map<String, String>) {
         prefs.edit().putString(KEY_PRIMARY_REASON_BY_PACKAGE, encodeMap(reasons)).apply()
     }
@@ -412,6 +433,24 @@ class PolicyStore(context: Context) {
         return values.entries.joinToString(separator = "\n") { "${it.key}=${it.value}" }
     }
 
+    private fun encodeReasonSetMap(values: Map<String, Set<String>>): String {
+        if (values.isEmpty()) return ""
+        return values.entries.asSequence()
+            .mapNotNull { (pkg, reasons) ->
+                val cleanPackage = pkg.trim()
+                if (cleanPackage.isBlank()) return@mapNotNull null
+                val cleanReasons = reasons.asSequence()
+                    .map(String::trim)
+                    .filter(String::isNotBlank)
+                    .distinct()
+                    .sorted()
+                    .toList()
+                if (cleanReasons.isEmpty()) return@mapNotNull null
+                "$cleanPackage=${cleanReasons.joinToString(",")}"
+            }
+            .joinToString(separator = "\n")
+    }
+
     private fun normalizeSupportedMode(raw: String): ModeState {
         val parsed = runCatching { ModeState.valueOf(raw) }.getOrDefault(ModeState.NORMAL)
         return when (parsed) {
@@ -459,6 +498,7 @@ class PolicyStore(context: Context) {
         private const val KEY_LAST_ALLOWLIST_REASONS = "last_allowlist_reasons"
         private const val KEY_LAST_UNINSTALL_PROTECTED = "last_uninstall_protected"
         private const val KEY_PRIMARY_REASON_BY_PACKAGE = "primary_reason_by_package"
+        private const val KEY_BLOCK_REASONS_BY_PACKAGE = "block_reasons_by_package"
         private const val KEY_CURRENT_LOCK_REASON = "current_lock_reason"
         private const val KEY_PROVISIONING_SIGNAL_ACTION = "provisioning_signal_action"
         private const val KEY_PROVISIONING_SIGNAL_AT = "provisioning_signal_at"
@@ -493,10 +533,6 @@ class PolicyStore(context: Context) {
         }
     }
 }
-
-
-
-
 
 
 
