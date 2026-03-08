@@ -47,7 +47,6 @@ import com.ankit.destination.policy.PolicyEngine
 import com.ankit.destination.security.AppLockManager
 import com.ankit.destination.ui.components.AdminSessionBanner
 import com.ankit.destination.ui.components.AdminSessionDialog
-import com.ankit.destination.ui.components.AnimatedNumberCounter
 import com.ankit.destination.ui.components.collectAsStateWithLifecycleCompat
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
@@ -394,7 +393,10 @@ fun DeviceControlsScreen() {
 @Composable
 private fun OverviewStat(label: String, value: Int) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        AnimatedNumberCounter(targetValue = value, textStyle = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold))
+        Text(
+            text = "$value",
+            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+        )
         Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

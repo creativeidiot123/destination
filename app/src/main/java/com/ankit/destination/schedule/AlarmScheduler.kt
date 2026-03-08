@@ -8,8 +8,13 @@ import android.os.Build
 import com.ankit.destination.policy.FocusEventId
 import com.ankit.destination.policy.FocusLog
 
-class AlarmScheduler(private val context: Context) {
-    fun scheduleNextTransition(atMillis: Long) {
+internal interface AlarmSchedulerClient {
+    fun scheduleNextTransition(atMillis: Long)
+    fun cancelNextTransition()
+}
+
+internal class AlarmScheduler(private val context: Context) : AlarmSchedulerClient {
+    override fun scheduleNextTransition(atMillis: Long) {
         val alarmManager = context.getSystemService(AlarmManager::class.java) ?: return
         val pi = pendingIntent()
         alarmManager.cancel(pi)
@@ -44,7 +49,7 @@ class AlarmScheduler(private val context: Context) {
         }
     }
 
-    fun cancelNextTransition() {
+    override fun cancelNextTransition() {
         val alarmManager = context.getSystemService(AlarmManager::class.java) ?: return
         alarmManager.cancel(pendingIntent())
         FocusLog.d(FocusEventId.ALARM_SCHEDULE, "cancelNextTransition: alarm cancelled")

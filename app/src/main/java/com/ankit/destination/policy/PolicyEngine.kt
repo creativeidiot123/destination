@@ -5,6 +5,7 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import com.ankit.destination.budgets.BudgetOrchestrator
+import com.ankit.destination.budgets.PolicyBudgetClient
 import com.ankit.destination.data.AppGroupMap
 import com.ankit.destination.data.AppPolicy
 import com.ankit.destination.data.EmergencyState
@@ -16,6 +17,7 @@ import com.ankit.destination.data.GroupEmergencyConfig
 import com.ankit.destination.data.GroupLimit
 import com.ankit.destination.data.ScheduleBlockGroup
 import com.ankit.destination.schedule.AlarmScheduler
+import com.ankit.destination.schedule.AlarmSchedulerClient
 import com.ankit.destination.schedule.ScheduleDecision
 import com.ankit.destination.schedule.ScheduleEvaluator
 import com.ankit.destination.usage.UsageAccess
@@ -28,17 +30,44 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import java.time.ZonedDateTime
 
-class PolicyEngine(context: Context) {
-    private val appContext = context.applicationContext
-    private val facade = DevicePolicyFacade(appContext)
+class PolicyEngine private constructor(
+    private val appContext: Context,
+    private val clock: PolicyClock,
+    private val facade: DevicePolicyClient,
+    private val resolver: PackageResolverClient,
+    private val budgetClient: PolicyBudgetClient,
+    private val alarmScheduler: AlarmSchedulerClient
+) {
     private val store = PolicyStore(appContext)
-    private val resolver = PackageResolver(appContext)
     private val db by lazy { FocusDatabase.get(appContext) }
-    private val budgetOrchestrator by lazy { BudgetOrchestrator(appContext) }
     private val evaluator = PolicyEvaluator(resolver, appContext.packageName)
     private val applier = PolicyApplier(facade)
-    private val alarmScheduler by lazy { AlarmScheduler(appContext) }
     @Volatile private var policyControlsCache: PolicyControls? = null
+
+    constructor(context: Context) : this(
+        appContext = context.applicationContext,
+        clock = SystemPolicyClock,
+        facade = DevicePolicyFacade(context.applicationContext),
+        resolver = PackageResolver(context.applicationContext),
+        budgetClient = BudgetOrchestrator(context.applicationContext),
+        alarmScheduler = AlarmScheduler(context.applicationContext)
+    )
+
+    internal constructor(
+        context: Context,
+        clock: PolicyClock,
+        facade: DevicePolicyClient,
+        resolver: PackageResolverClient,
+        budgetClient: PolicyBudgetClient,
+        alarmScheduler: AlarmSchedulerClient
+    ) : this(
+        appContext = context.applicationContext,
+        clock = clock,
+        facade = facade,
+        resolver = resolver,
+        budgetClient = budgetClient,
+        alarmScheduler = alarmScheduler
+    )
 
     fun isDeviceOwner(): Boolean = facade.isDeviceOwner()
 
@@ -311,7 +340,7 @@ class PolicyEngine(context: Context) {
         return requestApplyNow(hostActivity = hostActivity, reason = "budget:$trigger")
     }
 
-    fun shouldRunBudgetEvaluation(nowMs: Long = System.currentTimeMillis(), graceMs: Long = 15_000L): Boolean {
+    fun shouldRunBudgetEvaluation(nowMs: Long = clock.nowMs(), graceMs: Long = 15_000L): Boolean {
         return isBudgetEvaluationDue(nowMs, store.getBudgetNextCheckAtMs(), graceMs)
     }
 
@@ -493,7 +522,8 @@ class PolicyEngine(context: Context) {
     fun diagnosticsSnapshot(): DiagnosticsSnapshot {
         val desiredMode = store.getDesiredMode()
         val trackedPackages = sanitizeTrackedPackages()
-        val external = computeExternalState()
+        val nowMs = clock.nowMs()
+        val external = computeExternalState(nowMs)
         val expected = evaluator.evaluate(
             mode = desiredMode,
             emergencyApps = getEmergencyApps(),
@@ -517,6 +547,7 @@ class PolicyEngine(context: Context) {
         val scheduleActive = store.isScheduleLockEnforced()
         val scheduleStrictComputed = store.isScheduleStrictComputed()
         val scheduleStrictActive = store.isScheduleStrictEnforced()
+        val scheduleBlockedPackages = store.getScheduleBlockedPackages()
         val compliance = external.usageAccessComplianceState
         return DiagnosticsSnapshot(
             deviceOwner = isDeviceOwner(),
@@ -532,6 +563,7 @@ class PolicyEngine(context: Context) {
             scheduleStrictComputed = scheduleStrictComputed,
             scheduleStrictActive = scheduleStrictActive,
             scheduleBlockedGroups = store.getScheduleBlockedGroups(),
+            scheduleBlockedPackages = scheduleBlockedPackages,
             scheduleLockReason = scheduleReason,
             scheduleNextTransitionAtMs = store.getScheduleNextTransitionAtMs(),
             budgetBlockedPackages = store.getBudgetBlockedPackages(),
@@ -573,16 +605,32 @@ class PolicyEngine(context: Context) {
             alwaysBlockedApps = external.policyControls.alwaysBlockedApps,
             uninstallProtectedApps = external.policyControls.uninstallProtectedApps,
             globalControls = external.policyControls.globalControls,
-            primaryReasonByPackage = expected.primaryReasonByPackage
+            primaryReasonByPackage = expected.primaryReasonByPackage,
+            packageDiagnostics = buildPackageDiagnostics(
+                nowMs = nowMs,
+                expected = expected,
+                external = external,
+                scheduleBlockedPackages = scheduleBlockedPackages
+            )
         )
     }
 
     fun onNewPackageInstalledDuringStrictSchedule(packageName: String): Boolean {
         synchronized(APPLY_LOCK) {
             if (!isDeviceOwner()) return false
-            val orchestrated = orchestrateCurrentPolicy()
-            persistComputedState(orchestrated)
-            if (!orchestrated.strictActive) return false
+            if (
+                shouldRefreshStrictScheduleForInstall(
+                    scheduleStrictComputed = store.isScheduleStrictComputed(),
+                    scheduleNextTransitionAtMs = store.getScheduleNextTransitionAtMs(),
+                    nowMs = clock.nowMs()
+                )
+            ) {
+                val orchestrated = orchestrateCurrentPolicy()
+                persistComputedState(orchestrated)
+                if (!orchestrated.scheduleState.strictActive) return false
+            } else if (!store.isScheduleStrictComputed()) {
+                return false
+            }
             val controls = loadPolicyControls()
             if (controls.alwaysAllowedApps.contains(packageName)) return false
             val allowlist = resolver.resolveAllowlist(
@@ -610,7 +658,7 @@ class PolicyEngine(context: Context) {
             manualMode = targetMode,
             scheduleComputed = false,
             touchGrassBreakUntilMs = null,
-            nowMs = System.currentTimeMillis()
+            nowMs = clock.nowMs()
         )
         if (!isDeviceOwner()) {
             return failureResult(
@@ -812,8 +860,8 @@ class PolicyEngine(context: Context) {
         }
         persistComputedState(orchestrated)
         val external = computeExternalState(orchestrated.nowMs)
-        FocusLog.d(FocusEventId.POLICY_STATE_COMPUTED, "â•‘ effectiveMode=${external.effectiveMode} schedLock=${orchestrated.scheduleDecision.shouldLock} strict=${orchestrated.strictActive}")
-        FocusLog.d(FocusEventId.POLICY_STATE_COMPUTED, "â•‘ suspendTargets=${external.budgetBlockedPackages.size} schedBlockedGroups=${orchestrated.scheduleDecision.blockedGroupIds.size} budgetBlocked=${external.budgetBlockedPackages.size}")
+        FocusLog.d(FocusEventId.POLICY_STATE_COMPUTED, "â•‘ effectiveMode=${external.effectiveMode} schedLock=${orchestrated.scheduleState.active} strict=${orchestrated.scheduleState.strictActive}")
+        FocusLog.d(FocusEventId.POLICY_STATE_COMPUTED, "â•‘ suspendTargets=${external.budgetBlockedPackages.size} schedBlockedGroups=${orchestrated.scheduleState.blockedGroupIds.size} schedBlockedApps=${orchestrated.scheduleState.blockedAppPackages.size} budgetBlocked=${external.budgetBlockedPackages.size}")
         val result = FocusLog.timed(FocusEventId.POLICY_APPLY_START, "applyModeInternal") {
             applyModeInternal(
                 targetMode = external.effectiveMode,
@@ -826,8 +874,8 @@ class PolicyEngine(context: Context) {
             )
         }
         if (result.success) {
-            store.setScheduleEnforced(orchestrated.scheduleDecision.shouldLock)
-            store.setScheduleStrictEnforced(orchestrated.strictActive)
+            store.setScheduleEnforced(orchestrated.scheduleState.active)
+            store.setScheduleStrictEnforced(orchestrated.scheduleState.strictActive)
         } else {
             store.setScheduleEnforced(previousScheduleEnforced)
             store.setScheduleStrictEnforced(previousStrictEnforced)
@@ -842,7 +890,7 @@ class PolicyEngine(context: Context) {
         return result
     }
 
-    private fun syncNextAlarm(nowMs: Long = System.currentTimeMillis(), keepOverdueBudgetCheck: Boolean = false) {
+    private fun syncNextAlarm(nowMs: Long = clock.nowMs(), keepOverdueBudgetCheck: Boolean = false) {
         val nextAlarmAt = pickNextAlarmAtMs(
             nowMs = nowMs,
             scheduleNextTransitionAtMs = store.getScheduleNextTransitionAtMs(),
@@ -853,7 +901,7 @@ class PolicyEngine(context: Context) {
         nextAlarmAt?.let(alarmScheduler::scheduleNextTransition) ?: alarmScheduler.cancelNextTransition()
     }
 
-    private fun orchestrateCurrentPolicy(now: ZonedDateTime = ZonedDateTime.now()): OrchestratedState {
+    private fun orchestrateCurrentPolicy(now: ZonedDateTime = clock.now()): OrchestratedState {
         val policyControls = loadPolicyControls()
         val allowlistPackages = resolver.resolveAllowlist(
             userChosenEmergencyApps = getEmergencyApps(),
@@ -864,25 +912,33 @@ class PolicyEngine(context: Context) {
                 val budgetDao = db.budgetDao()
                 val scheduleDao = db.scheduleDao()
                 val blocks = scheduleDao.getEnabledBlocks()
-                val blockGroups = scheduleDao.getAllBlockGroups()
-                    .groupBy(ScheduleBlockGroup::blockId, ScheduleBlockGroup::groupId)
-                    .mapValues { it.value.toSet() }
+                val scheduleTargets = splitScheduleTargetsByBlock(scheduleDao.getAllBlockGroups())
                 LoadedPolicyRows(
                     groupLimits = budgetDao.getEnabledGroupLimits(),
                     groupEmergencyConfigs = budgetDao.getAllGroupEmergencyConfigs().associateBy { it.groupId },
                     appPolicies = budgetDao.getEnabledAppPolicies(),
                     mappings = budgetDao.getAllMappings(),
                     scheduleBlocks = blocks,
-                    scheduleBlockGroups = blockGroups,
-                    emergencyStates = budgetOrchestrator.getActiveEmergencyStates(now)
+                    scheduleBlockTargets = scheduleTargets.allTargetsByBlockId,
+                    scheduleGroupTargetsByBlock = scheduleTargets.groupTargetsByBlockId,
+                    scheduleAppTargetsByBlock = scheduleTargets.appTargetsByBlockId,
+                    emergencyStates = budgetClient.getActiveEmergencyStates(now)
                 )
             }
         }
-        val scheduleDecision = ScheduleEvaluator.evaluate(now, loaded.scheduleBlocks, loaded.scheduleBlockGroups)
-        val scheduledTargetIds = scheduleDecision.blockedGroupIds
-        val scheduledGroupIds = scheduledTargetIds.filterTo(linkedSetOf()) { !isSingleAppScheduleTarget(it) }
-        val scheduledAppPackages = scheduledTargetIds.mapNotNullTo(linkedSetOf()) { decodeSingleAppScheduleTarget(it) }
-        val usageSnapshot = runBlocking { budgetOrchestrator.readUsageSnapshot(now) }
+        val scheduleDecision = ScheduleEvaluator.evaluate(now, loaded.scheduleBlocks, loaded.scheduleBlockTargets)
+        val activeBlockIds = scheduleDecision.activeBlockIds
+        val targetedActiveBlockIds = activeBlockIds.filterTo(linkedSetOf()) { blockId ->
+            loaded.scheduleGroupTargetsByBlock[blockId].orEmpty().isNotEmpty() ||
+                loaded.scheduleAppTargetsByBlock[blockId].orEmpty().isNotEmpty()
+        }
+        val scheduledGroupIds = activeBlockIds.flatMapTo(linkedSetOf()) { blockId ->
+            loaded.scheduleGroupTargetsByBlock[blockId].orEmpty()
+        }
+        val scheduledAppPackages = activeBlockIds.flatMapTo(linkedSetOf()) { blockId ->
+            loaded.scheduleAppTargetsByBlock[blockId].orEmpty()
+        }
+        val usageSnapshot = runBlocking { budgetClient.readUsageSnapshot(now) }
         val groupMembers = loaded.mappings.groupBy(AppGroupMap::groupId) { it.packageName }
         val groupInputs = loaded.groupLimits.map { limit ->
             GroupPolicyInput(
@@ -897,10 +953,18 @@ class PolicyEngine(context: Context) {
                 scheduleBlocked = scheduledGroupIds.contains(limit.groupId)
             )
         }
+        val baseScheduleState = resolveLiveScheduleState(
+            scheduleDecision = scheduleDecision,
+            scheduleBlocks = loaded.scheduleBlocks,
+            targetedActiveBlockIds = targetedActiveBlockIds,
+            scheduledGroupIds = scheduledGroupIds,
+            scheduledAppPackages = scheduledAppPackages
+        )
         val strictActive = resolveStrictScheduleActive(
-            scheduleStrictActive = scheduleDecision.strictActive,
+            scheduleStrictActive = baseScheduleState.strictActive,
             groupInputs = groupInputs
         )
+        val scheduleState = baseScheduleState.copy(strictActive = strictActive)
         val strictInstallBlocked = if (strictActive) {
             store.getStrictInstallSuspendedPackages()
         } else {
@@ -952,9 +1016,10 @@ class PolicyEngine(context: Context) {
             nextCheckAtMs = usageSnapshot.nextCheckAtMs,
             scheduleDecision = scheduleDecision,
             scheduledGroupIds = scheduledGroupIds,
+            scheduledAppPackages = scheduledAppPackages,
+            scheduleState = scheduleState,
             policyControls = policyControls,
-            evaluation = evaluation,
-            strictActive = strictActive
+            evaluation = evaluation
         )
     }
 
@@ -963,78 +1028,28 @@ class PolicyEngine(context: Context) {
             userChosenEmergencyApps = getEmergencyApps(),
             alwaysAllowedApps = orchestrated.policyControls.alwaysAllowedApps
         ).packages
-        val budgetBlockedSuspendable = resolver.filterSuspendable(
-            packages = orchestrated.evaluation.effectiveBlockedPackages,
-            allowlist = allowlistPackages
+        val suspendPlan = computeSuspendPlan(
+            evaluation = orchestrated.evaluation,
+            alwaysBlockedPackages = orchestrated.policyControls.alwaysBlockedInstalledPackages,
+            allowlistPackages = allowlistPackages
         )
-        val scheduleBlockedSuspendable = resolver.filterSuspendable(
-            packages = orchestrated.evaluation.scheduledBlockedPackages,
-            allowlist = allowlistPackages
-        )
-        val alwaysBlockedSuspendable = resolver.filterSuspendable(
-            packages = orchestrated.policyControls.alwaysBlockedInstalledPackages,
-            allowlist = allowlistPackages
-        )
-        val strictInstallSuspendable = resolver.filterSuspendable(
-            packages = orchestrated.evaluation.strictInstallBlockedPackages,
-            allowlist = allowlistPackages
-        )
-        val suspendableSet = linkedSetOf<String>().apply {
-            addAll(budgetBlockedSuspendable)
-            addAll(scheduleBlockedSuspendable)
-            addAll(alwaysBlockedSuspendable)
-            addAll(strictInstallSuspendable)
-        }
-        val normalizedBlockReasons = orchestrated.evaluation.blockReasonsByPackage
-            .asSequence()
-            .mapNotNull { (rawPackage, reasons) ->
-                val normalizedPackage = rawPackage.trim()
-                if (normalizedPackage.isBlank() || !suspendableSet.contains(normalizedPackage)) return@mapNotNull null
-                val normalizedReasons = reasons.asSequence()
-                    .map(String::trim)
-                    .filter(String::isNotBlank)
-                    .toSet()
-                if (normalizedReasons.isEmpty()) null else normalizedPackage to normalizedReasons
-            }
-            .toMap()
-        val fullReasons = linkedMapOf<String, MutableSet<String>>()
-        normalizedBlockReasons.forEach { (pkg, reasons) ->
-            fullReasons.getOrPut(pkg) { linkedSetOf() }.addAll(reasons)
-        }
-        orchestrated.evaluation.strictInstallBlockedPackages.forEach { pkg ->
-            if (strictInstallSuspendable.contains(pkg)) {
-                fullReasons.getOrPut(pkg) { linkedSetOf() }.add(EffectiveBlockReason.STRICT_INSTALL.name)
-            }
-        }
-        alwaysBlockedSuspendable.forEach { pkg ->
-            fullReasons.getOrPut(pkg) { linkedSetOf() }.add(EffectiveBlockReason.ALWAYS_BLOCKED.name)
-        }
-        scheduleBlockedSuspendable.forEach { pkg ->
-            val reasons = fullReasons.getOrPut(pkg) { linkedSetOf() }
-            if (reasons.isEmpty()) {
-                reasons.add(EffectiveBlockReason.SCHEDULED_BLOCK.name)
-            }
-        }
-        val immutableReasonMap = fullReasons.mapValues { it.value.toSet() }
-        val derivedPrimaryReasons = BlockReasonUtils.derivePrimaryByPackage(immutableReasonMap)
-        val derivedSuspendTargets = immutableReasonMap.keys.toSet()
         store.setComputedPolicyState(
-            scheduleLockComputed = orchestrated.scheduleDecision.shouldLock,
-            scheduleStrictComputed = orchestrated.strictActive,
-            scheduleBlockedGroups = orchestrated.scheduledGroupIds,
-            scheduleBlockedPackages = scheduleBlockedSuspendable,
-            scheduleLockReason = orchestrated.scheduleDecision.reason,
+            scheduleLockComputed = orchestrated.scheduleState.active,
+            scheduleStrictComputed = orchestrated.scheduleState.strictActive,
+            scheduleBlockedGroups = orchestrated.scheduleState.blockedGroupIds,
+            scheduleBlockedPackages = suspendPlan.scheduleBlockedPackages,
+            scheduleLockReason = orchestrated.scheduleState.reason,
             scheduleNextTransitionAtMs = orchestrated.scheduleDecision.nextTransitionAt?.toInstant()?.toEpochMilli(),
-            budgetBlockedPackages = derivedSuspendTargets,
+            budgetBlockedPackages = suspendPlan.suspendTargets,
             budgetBlockedGroupIds = orchestrated.evaluation.effectiveBlockedGroupIds,
             budgetReason = orchestrated.usageAccessComplianceState.reason
                 ?: orchestrated.evaluation.usageReasonSummary
                 ?: if (!orchestrated.usageAccessGranted) "Usage access not granted" else null,
             budgetUsageAccessGranted = orchestrated.usageAccessGranted,
             budgetNextCheckAtMs = orchestrated.nextCheckAtMs,
-            primaryReasonByPackage = derivedPrimaryReasons,
-            blockReasonsByPackage = immutableReasonMap,
-            clearStrictInstallSuspendedPackages = !orchestrated.strictActive
+            primaryReasonByPackage = suspendPlan.primaryReasons,
+            blockReasonsByPackage = suspendPlan.blockReasonsByPackage,
+            clearStrictInstallSuspendedPackages = !orchestrated.scheduleState.strictActive
         )
         if (
             orchestrated.usageAccessComplianceState.lockdownActive &&
@@ -1049,11 +1064,100 @@ class PolicyEngine(context: Context) {
         FocusLog.i(
             appContext,
             FocusEventId.POLICY_STATE_COMPUTED,
-            "scheduleLock=${orchestrated.scheduleDecision.shouldLock} strict=${orchestrated.strictActive} scheduledGroups=${orchestrated.scheduledGroupIds.size} scheduledApps=${orchestrated.evaluation.scheduledBlockedPackages.size} blockedPackages=${orchestrated.evaluation.effectiveBlockedPackages.size} blockedGroups=${orchestrated.evaluation.effectiveBlockedGroupIds.size} usageAccess=${orchestrated.usageAccessGranted}"
+            "scheduleLock=${orchestrated.scheduleState.active} strict=${orchestrated.scheduleState.strictActive} scheduledGroups=${orchestrated.scheduleState.blockedGroupIds.size} scheduledApps=${orchestrated.scheduleState.blockedAppPackages.size} blockedPackages=${orchestrated.evaluation.effectiveBlockedPackages.size} blockedGroups=${orchestrated.evaluation.effectiveBlockedGroupIds.size} usageAccess=${orchestrated.usageAccessGranted}"
         )
     }
 
-    private fun computeExternalState(nowMs: Long = System.currentTimeMillis()): ExternalState {
+    private fun computeSuspendPlan(
+        evaluation: EffectivePolicyEvaluation,
+        alwaysBlockedPackages: Set<String>,
+        allowlistPackages: Set<String>
+    ): SuspendPlan {
+        val budgetBlockedSuspendable = resolver.filterSuspendable(
+            packages = evaluation.effectiveBlockedPackages,
+            allowlist = allowlistPackages
+        )
+        val scheduleBlockedSuspendable = resolver.filterSuspendable(
+            packages = evaluation.scheduledBlockedPackages,
+            allowlist = allowlistPackages
+        )
+        val alwaysBlockedSuspendable = resolver.filterSuspendable(
+            packages = alwaysBlockedPackages,
+            allowlist = allowlistPackages
+        )
+        val strictInstallSuspendable = resolver.filterSuspendable(
+            packages = evaluation.strictInstallBlockedPackages,
+            allowlist = allowlistPackages
+        )
+        val suspendableSet = linkedSetOf<String>().apply {
+            addAll(budgetBlockedSuspendable)
+            addAll(scheduleBlockedSuspendable)
+            addAll(alwaysBlockedSuspendable)
+            addAll(strictInstallSuspendable)
+        }
+        val normalizedBlockReasons = evaluation.blockReasonsByPackage
+            .asSequence()
+            .mapNotNull { (rawPackage, reasons) ->
+                val normalizedPackage = rawPackage.trim()
+                if (normalizedPackage.isBlank() || !suspendableSet.contains(normalizedPackage)) return@mapNotNull null
+                val normalizedReasons = reasons
+                    .asSequence()
+                    .map(String::trim)
+                    .filter(String::isNotBlank)
+                    .toSet()
+                if (normalizedReasons.isEmpty()) null else normalizedPackage to normalizedReasons
+            }
+            .toMap()
+        val fullReasons = linkedMapOf<String, MutableSet<String>>()
+        normalizedBlockReasons.forEach { (pkg, reasons) ->
+            fullReasons.getOrPut(pkg) { linkedSetOf() }.addAll(reasons)
+        }
+        strictInstallSuspendable.forEach { pkg ->
+            fullReasons.getOrPut(pkg) { linkedSetOf() }.add(EffectiveBlockReason.STRICT_INSTALL.name)
+        }
+        alwaysBlockedSuspendable.forEach { pkg ->
+            fullReasons.getOrPut(pkg) { linkedSetOf() }.add(EffectiveBlockReason.ALWAYS_BLOCKED.name)
+        }
+        scheduleBlockedSuspendable.forEach { pkg ->
+            val reasons = fullReasons.getOrPut(pkg) { linkedSetOf() }
+            if (reasons.isEmpty()) {
+                reasons.add(EffectiveBlockReason.SCHEDULED_BLOCK.name)
+            }
+        }
+        val immutableReasonMap = fullReasons.mapValues { it.value.toSet() }
+        return SuspendPlan(
+            scheduleBlockedPackages = scheduleBlockedSuspendable,
+            suspendTargets = immutableReasonMap.keys.toSet(),
+            primaryReasons = BlockReasonUtils.derivePrimaryByPackage(immutableReasonMap),
+            blockReasonsByPackage = immutableReasonMap
+        )
+    }
+
+    private fun splitScheduleTargetsByBlock(
+        blockGroups: List<ScheduleBlockGroup>
+    ): ScheduleTargetsByBlock {
+        val allTargets = linkedMapOf<Long, MutableSet<String>>()
+        val groupTargets = linkedMapOf<Long, MutableSet<String>>()
+        val appTargets = linkedMapOf<Long, MutableSet<String>>()
+        blockGroups.forEach { row ->
+            val targetId = row.groupId.trim()
+            if (targetId.isBlank()) return@forEach
+            allTargets.getOrPut(row.blockId) { linkedSetOf() }.add(targetId)
+            val appPackage = decodeSingleAppScheduleTarget(targetId)
+            if (appPackage == null) {
+                groupTargets.getOrPut(row.blockId) { linkedSetOf() }.add(targetId)
+            } else {
+                appTargets.getOrPut(row.blockId) { linkedSetOf() }.add(appPackage)
+            }
+        }
+        return ScheduleTargetsByBlock(
+            allTargetsByBlockId = allTargets.mapValues { it.value.toSet() },
+            groupTargetsByBlockId = groupTargets.mapValues { it.value.toSet() },
+            appTargetsByBlockId = appTargets.mapValues { it.value.toSet() }
+        )
+    }
+
+    private fun computeExternalState(nowMs: Long = clock.nowMs()): ExternalState {
         val policyControls = loadPolicyControls()
         val allowlistPackages = resolver.resolveAllowlist(
             userChosenEmergencyApps = getEmergencyApps(),
@@ -1114,7 +1218,7 @@ class PolicyEngine(context: Context) {
         val scheduleReason = store.getScheduleLockReason()
         val lockReason = when {
             usageAccessComplianceState.lockdownActive -> usageAccessComplianceState.reason
-            strictActive -> scheduleReason ?: "Strict group schedule active"
+            strictActive -> scheduleReason ?: "Strict scheduled block active"
             scheduleComputed -> scheduleReason ?: "Scheduled block active"
             budgetBlocked.isNotEmpty() -> store.getBudgetReason() ?: "Policy limits exceeded"
             else -> null
@@ -1130,6 +1234,141 @@ class PolicyEngine(context: Context) {
             blockReasonsByPackage = filteredReasonSets,
             usageAccessComplianceState = usageAccessComplianceState
         )
+    }
+
+    private fun buildPackageDiagnostics(
+        nowMs: Long,
+        expected: PolicyState,
+        external: ExternalState,
+        scheduleBlockedPackages: Set<String>
+    ): List<PackageDiagnostics> {
+        val strictInstallStored = store.getStrictInstallSuspendedPackages()
+        val candidatePackages = linkedSetOf<String>().apply {
+            addAll(expected.suspendTargets)
+            addAll(expected.blockReasonsByPackage.keys)
+            addAll(external.blockReasonsByPackage.keys)
+            addAll(scheduleBlockedPackages)
+            addAll(external.strictInstallBlockedPackages)
+            addAll(external.policyControls.alwaysBlockedInstalledPackages)
+        }
+        return candidatePackages
+            .asSequence()
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .distinct()
+            .sorted()
+            .map { packageName ->
+                val activeReasons = linkedSetOf<String>().apply {
+                    addAll(external.blockReasonsByPackage[packageName].orEmpty())
+                    addAll(expected.blockReasonsByPackage[packageName].orEmpty())
+                    if (packageName in external.strictInstallBlockedPackages) {
+                        add(EffectiveBlockReason.STRICT_INSTALL.name)
+                    }
+                    if (packageName in external.policyControls.alwaysBlockedInstalledPackages) {
+                        add(EffectiveBlockReason.ALWAYS_BLOCKED.name)
+                    }
+                    if (
+                        packageName in scheduleBlockedPackages &&
+                        none { it.contains(EffectiveBlockReason.SCHEDULED_BLOCK.name, ignoreCase = true) }
+                    ) {
+                        add(EffectiveBlockReason.SCHEDULED_BLOCK.name)
+                    }
+                    if (
+                        packageName in expected.suspendTargets &&
+                        expected.primaryReasonByPackage[packageName] == EffectiveBlockReason.USAGE_ACCESS_RECOVERY_LOCKDOWN.name
+                    ) {
+                        add(EffectiveBlockReason.USAGE_ACCESS_RECOVERY_LOCKDOWN.name)
+                    }
+                }.toSet()
+                val disposition = if (packageName in expected.suspendTargets) {
+                    PackageDiagnosticsDisposition.SUSPEND_TARGET
+                } else {
+                    when (resolver.suspendabilityStatus(packageName, expected.lockTaskAllowlist)) {
+                        SuspendabilityStatus.SUSPENDABLE -> PackageDiagnosticsDisposition.ELIGIBLE_NOT_ACTIVE
+                        SuspendabilityStatus.ALLOWLISTED -> PackageDiagnosticsDisposition.ALLOWLISTED
+                        SuspendabilityStatus.PROTECTED -> PackageDiagnosticsDisposition.PROTECTED
+                        SuspendabilityStatus.NOT_INSTALLED -> PackageDiagnosticsDisposition.NOT_INSTALLED
+                    }
+                }
+                val primaryReason = expected.primaryReasonByPackage[packageName]
+                    ?: external.primaryReasonByPackage[packageName]
+                    ?: BlockReasonUtils.derivePrimaryReason(activeReasons)
+                        .takeUnless(String::isBlank)
+                PackageDiagnostics(
+                    packageName = packageName,
+                    activeReasons = activeReasons,
+                    primaryReason = primaryReason,
+                    disposition = disposition,
+                    allowlistReason = expected.allowlistReasons[packageName],
+                    fromStrictInstallSuspended = packageName in strictInstallStored,
+                    nextPotentialClearEvent = describeNextPotentialClearEvent(
+                        nowMs = nowMs,
+                        disposition = disposition,
+                        primaryReason = primaryReason,
+                        activeReasons = activeReasons,
+                        scheduleNextTransitionAtMs = store.getScheduleNextTransitionAtMs(),
+                        budgetNextCheckAtMs = store.getBudgetNextCheckAtMs()
+                    )
+                )
+            }
+            .toList()
+    }
+
+    private fun describeNextPotentialClearEvent(
+        nowMs: Long,
+        disposition: PackageDiagnosticsDisposition,
+        primaryReason: String?,
+        activeReasons: Set<String>,
+        scheduleNextTransitionAtMs: Long?,
+        budgetNextCheckAtMs: Long?
+    ): String {
+        if (disposition == PackageDiagnosticsDisposition.ALLOWLISTED) {
+            return "Already filtered by allowlist"
+        }
+        if (disposition == PackageDiagnosticsDisposition.ELIGIBLE_NOT_ACTIVE) {
+            return "Currently not targeted; next policy recompute may reactivate it"
+        }
+        if (disposition == PackageDiagnosticsDisposition.PROTECTED) {
+            return "Already filtered by protected-package rules"
+        }
+        if (disposition == PackageDiagnosticsDisposition.NOT_INSTALLED) {
+            return "Package is not installed; next install + policy recompute decides state"
+        }
+        val normalizedPrimary = primaryReason.orEmpty().uppercase()
+        val normalizedReasons = activeReasons.map { it.uppercase() }
+        return when {
+            normalizedPrimary == EffectiveBlockReason.ALWAYS_BLOCKED.name ||
+                normalizedReasons.any { it.contains(EffectiveBlockReason.ALWAYS_BLOCKED.name) } ->
+                "Config change: remove from always-blocked apps"
+            normalizedPrimary == EffectiveBlockReason.USAGE_ACCESS_RECOVERY_LOCKDOWN.name ||
+                normalizedReasons.any { it.contains(EffectiveBlockReason.USAGE_ACCESS_RECOVERY_LOCKDOWN.name) } ->
+                "Restore Usage Access; receiver or poll alarm will recompute"
+            normalizedPrimary.contains("SCHEDULED_BLOCK") ||
+                normalizedPrimary == EffectiveBlockReason.STRICT_INSTALL.name ||
+                normalizedReasons.any {
+                    it.contains(EffectiveBlockReason.SCHEDULED_BLOCK.name) ||
+                        it.contains(EffectiveBlockReason.STRICT_INSTALL.name)
+                } ->
+                scheduleNextTransitionAtMs
+                    ?.takeIf { it > nowMs }
+                    ?.let { "Schedule transition alarm at $it" }
+                    ?: "Next schedule recompute or policy reapply"
+            normalizedPrimary.contains("HOURLY_CAP") ||
+                normalizedPrimary.contains("DAILY_CAP") ||
+                normalizedPrimary.contains("OPENS_CAP") ||
+                normalizedPrimary == "BUDGET" ||
+                normalizedReasons.any {
+                    it.contains(EffectiveBlockReason.HOURLY_CAP.name) ||
+                        it.contains(EffectiveBlockReason.DAILY_CAP.name) ||
+                        it.contains(EffectiveBlockReason.OPENS_CAP.name) ||
+                        it == "BUDGET"
+                } ->
+                budgetNextCheckAtMs
+                    ?.takeIf { it > nowMs }
+                    ?.let { "Budget boundary recompute at $it" }
+                    ?: "Next budget boundary or policy reapply"
+            else -> "Next policy recompute"
+        }
     }
 
     private data class ExternalState(
@@ -1163,8 +1402,16 @@ class PolicyEngine(context: Context) {
         val appPolicies: List<AppPolicy>,
         val mappings: List<AppGroupMap>,
         val scheduleBlocks: List<com.ankit.destination.data.ScheduleBlock>,
-        val scheduleBlockGroups: Map<Long, Set<String>>,
+        val scheduleBlockTargets: Map<Long, Set<String>>,
+        val scheduleGroupTargetsByBlock: Map<Long, Set<String>>,
+        val scheduleAppTargetsByBlock: Map<Long, Set<String>>,
         val emergencyStates: List<EmergencyState>
+    )
+
+    private data class ScheduleTargetsByBlock(
+        val allTargetsByBlockId: Map<Long, Set<String>>,
+        val groupTargetsByBlockId: Map<Long, Set<String>>,
+        val appTargetsByBlockId: Map<Long, Set<String>>
     )
 
     private data class OrchestratedState(
@@ -1174,9 +1421,25 @@ class PolicyEngine(context: Context) {
         val nextCheckAtMs: Long?,
         val scheduleDecision: ScheduleDecision,
         val scheduledGroupIds: Set<String>,
+        val scheduledAppPackages: Set<String>,
+        val scheduleState: LiveScheduleState,
         val policyControls: PolicyControls,
-        val evaluation: EffectivePolicyEvaluation,
-        val strictActive: Boolean
+        val evaluation: EffectivePolicyEvaluation
+    )
+
+    private data class SuspendPlan(
+        val scheduleBlockedPackages: Set<String>,
+        val suspendTargets: Set<String>,
+        val primaryReasons: Map<String, String>,
+        val blockReasonsByPackage: Map<String, Set<String>>
+    )
+
+    internal data class LiveScheduleState(
+        val active: Boolean,
+        val strictActive: Boolean,
+        val blockedGroupIds: Set<String>,
+        val blockedAppPackages: Set<String>,
+        val reason: String
     )
 
     private fun loadPolicyControls(): PolicyControls = runBlocking { loadPolicyControlsAsync() }
@@ -1321,6 +1584,60 @@ class PolicyEngine(context: Context) {
             groupInputs: List<GroupPolicyInput>
         ): Boolean {
             return scheduleStrictActive || groupInputs.any { it.scheduleBlocked && it.strictEnabled }
+        }
+
+        internal fun shouldRefreshStrictScheduleForInstall(
+            scheduleStrictComputed: Boolean,
+            scheduleNextTransitionAtMs: Long?,
+            nowMs: Long
+        ): Boolean {
+            if (!scheduleStrictComputed) return true
+            val nextTransitionAt = scheduleNextTransitionAtMs ?: return true
+            return nowMs >= nextTransitionAt
+        }
+
+        internal fun resolveLiveScheduleState(
+            scheduleDecision: ScheduleDecision,
+            scheduleBlocks: List<com.ankit.destination.data.ScheduleBlock>,
+            targetedActiveBlockIds: Set<Long>,
+            scheduledGroupIds: Set<String>,
+            scheduledAppPackages: Set<String>
+        ): LiveScheduleState {
+            val active = scheduledGroupIds.isNotEmpty() || scheduledAppPackages.isNotEmpty()
+            if (!active) {
+                return LiveScheduleState(
+                    active = false,
+                    strictActive = false,
+                    blockedGroupIds = scheduledGroupIds,
+                    blockedAppPackages = scheduledAppPackages,
+                    reason = scheduleDecision.reason
+                )
+            }
+            val activeBlocksById = scheduleBlocks.associateBy { it.id }
+            val targetedActiveBlocks = targetedActiveBlockIds.mapNotNull(activeBlocksById::get)
+            val strictActive = targetedActiveBlocks.any { it.strict }
+            val names = targetedActiveBlocks.joinToString(", ") { it.name }
+            val reason = when {
+                scheduledGroupIds.isNotEmpty() && scheduledAppPackages.isNotEmpty() && strictActive ->
+                    "Strict mixed schedule active: $names"
+                scheduledGroupIds.isNotEmpty() && scheduledAppPackages.isNotEmpty() ->
+                    "Mixed schedule active: $names"
+                scheduledAppPackages.isNotEmpty() && strictActive ->
+                    "Strict app schedule active: $names"
+                scheduledAppPackages.isNotEmpty() ->
+                    "App schedule active: $names"
+                strictActive ->
+                    "Strict group schedule active: $names"
+                else ->
+                    "Group schedule active: $names"
+            }
+            return LiveScheduleState(
+                active = true,
+                strictActive = strictActive,
+                blockedGroupIds = scheduledGroupIds,
+                blockedAppPackages = scheduledAppPackages,
+                reason = reason
+            )
         }
 
         fun isBudgetEvaluationDue(nowMs: Long, nextCheckAtMs: Long?, graceMs: Long = 15_000L): Boolean {

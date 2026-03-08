@@ -24,6 +24,12 @@ data class GroupBudgetResult(
     val blockedGroupIds: Set<String>
 )
 
+/**
+ * Secondary helper only.
+ *
+ * The canonical runtime evaluator is `EffectivePolicyEvaluator` as wired by `PolicyEngine`.
+ * This helper remains useful for isolated calculations, but it is not the live enforcement path.
+ */
 object DynamicGroupBudgetEvaluator {
     fun evaluate(
         groups: List<GroupState>,

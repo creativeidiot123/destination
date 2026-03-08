@@ -3,7 +3,8 @@ package com.ankit.destination.ui.apps
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -44,6 +46,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -53,10 +56,7 @@ import com.ankit.destination.policy.PolicyEngine
 import com.ankit.destination.security.AppLockManager
 import com.ankit.destination.ui.components.AdminSessionBanner
 import com.ankit.destination.ui.components.AdminSessionDialog
-import com.ankit.destination.ui.components.AnimatedNumberCounter
 import com.ankit.destination.ui.components.InstalledAppIcon
-import com.ankit.destination.ui.components.RadialProgressGauge
-import com.ankit.destination.ui.components.bouncyClickable
 import com.ankit.destination.ui.components.collectAsStateWithLifecycleCompat
 import com.ankit.destination.ui.components.showShortToast
 
@@ -136,9 +136,6 @@ fun IndividualAppsScreen(
         val customRulesCount = remember(uiState.apps) {
             uiState.apps.count { it.hasCustomRules }
         }
-        val maxUsage = remember(filteredApps) {
-            (filteredApps.maxOfOrNull { it.usageTimeMs } ?: 0L).coerceAtLeast(1L)
-        }
 
         Column(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
             AdminSessionBanner(remainingMs = uiState.adminSessionRemainingMs)
@@ -167,26 +164,18 @@ fun IndividualAppsScreen(
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                RadialProgressGauge(
-                                    progress = when {
-                                        uiState.apps.isEmpty() -> 0f
-                                        else -> (customRulesCount.toFloat() / uiState.apps.size.toFloat()).coerceIn(0f, 1f)
-                                    },
-                                    modifier = Modifier.size(80.dp),
-                                    strokeWidth = 16f
-                                ) {
-                                    AnimatedNumberCounter(
-                                        targetValue = customRulesCount,
-                                        textStyle = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold)
-                                    )
-                                }
+                                Text(
+                                    text = customRulesCount.toString(),
+                                    style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.primary
+                                )
                                 Spacer(modifier = Modifier.height(16.dp))
                                 Text("Apps have custom rules", style = MaterialTheme.typography.labelMedium)
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    AnimatedNumberCounter(
-                                        targetValue = totalUsageMinutes.toInt(),
-                                        textStyle = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                                    Text(
+                                        text = "$totalUsageMinutes mins",
+                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
                                         color = MaterialTheme.colorScheme.primary
                                     )
                                     Text(" minutes tracked today", style = MaterialTheme.typography.bodySmall)
@@ -252,12 +241,11 @@ fun IndividualAppsScreen(
                 }
 
                 items(filteredApps, key = { it.packageName }) { app ->
-                    val interactionSource = remember { MutableInteractionSource() }
 
                     ElevatedCard(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .bouncyClickable(interactionSource = interactionSource) {
+                            .clickable {
                                 toast("Opening ${app.label}.")
                                 viewModel.attemptEditApp(app.packageName) { onNavigateToAppDetail(it) }
                             },
@@ -273,12 +261,19 @@ fun IndividualAppsScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    val progressVal = (app.usageTimeMs.toFloat() / maxUsage.toFloat()).coerceIn(0f, 1f)
-                                    RadialProgressGauge(
-                                        progress = progressVal,
-                                        modifier = Modifier.size(52.dp),
-                                        strokeWidth = 14f,
-                                        activeColor = if (app.blockMessage != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                                    Box(
+                                        modifier = Modifier
+                                            .size(52.dp)
+                                            .clip(CircleShape)
+                                            .background(
+                                                color = if (app.blockMessage != null) {
+                                                    MaterialTheme.colorScheme.errorContainer
+                                                } else {
+                                                    MaterialTheme.colorScheme.primaryContainer
+                                                },
+                                                shape = CircleShape
+                                            ),
+                                        contentAlignment = Alignment.Center
                                     ) {
                                         InstalledAppIcon(
                                             packageName = app.packageName,
@@ -290,11 +285,10 @@ fun IndividualAppsScreen(
                                     Column {
                                         Text(app.label, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                                         Row(verticalAlignment = Alignment.CenterVertically) {
-                                            AnimatedNumberCounter(
-                                                targetValue = (app.usageTimeMs / 60000).toInt(),
-                                                textStyle = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-                                                color = if (app.blockMessage != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-                                                suffix = " mins"
+                                            Text(
+                                                text = "${app.usageTimeMs / 60000} mins",
+                                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                                                color = if (app.blockMessage != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                                             )
                                             Text(
                                                 " | ${app.opensToday} opens",

@@ -16,34 +16,72 @@ data class PackageSuspendResult(
     val errors: List<String>
 )
 
-class DevicePolicyFacade(private val context: Context) {
+internal interface DevicePolicyClient {
+    val adminComponent: ComponentName
+    val packageName: String
+
+    fun isAdminActive(): Boolean
+    fun isDeviceOwner(): Boolean
+    fun clearDeviceOwnerApp()
+    fun setLockTaskPackages(packages: List<String>)
+    fun setLockTaskFeatures(features: Int)
+    fun getLockTaskFeatures(): Int?
+    fun getLockTaskPackages(): List<String>
+    fun setStatusBarDisabled(disabled: Boolean): Boolean?
+    fun setAlwaysOnVpnPackage(vpnPackage: String?, lockdownEnabled: Boolean)
+    fun getAlwaysOnVpnPackage(): String?
+    fun isAlwaysOnVpnLockdownEnabled(): Boolean?
+    fun getGlobalPrivateDnsMode(): Int?
+    fun getGlobalPrivateDnsHost(): String?
+    fun supportsGlobalPrivateDns(): Boolean
+    fun setGlobalPrivateDnsModeOpportunistic(): Int?
+    fun setGlobalPrivateDnsModeSpecifiedHost(host: String): Int?
+    fun setPackagesSuspended(packages: List<String>, suspended: Boolean): PackageSuspendResult
+    fun setUninstallBlocked(packageName: String, blocked: Boolean)
+    fun isUninstallBlocked(packageName: String): Boolean
+    fun supportsUserControlDisabledPackages(): Boolean
+    fun setUserControlDisabledPackages(packages: List<String>)
+    fun getUserControlDisabledPackages(): Set<String>
+    fun addUserRestriction(restriction: String)
+    fun clearUserRestriction(restriction: String)
+    fun hasUserRestriction(restriction: String): Boolean
+    fun setAutoTimeRequired(required: Boolean)
+    fun isAutoTimeRequired(): Boolean
+    fun canVerifyPackageSuspension(): Boolean
+    fun isPackageSuspended(packageName: String): Boolean?
+    fun lockTaskModeState(): Int?
+    fun isHomeAppPinnedToSelf(): Boolean?
+    fun setAsHomeForKiosk(enabled: Boolean)
+}
+
+internal class DevicePolicyFacade(private val context: Context) : DevicePolicyClient {
     private val dpm = context.getSystemService(DevicePolicyManager::class.java)
     private val userManager = context.getSystemService(UserManager::class.java)
     private val activityManager = context.getSystemService(ActivityManager::class.java)
     private val packageManager: PackageManager = context.packageManager
 
-    val adminComponent: ComponentName = ComponentName(context, FocusDeviceAdminReceiver::class.java)
-    val packageName: String = context.packageName
+    override val adminComponent: ComponentName = ComponentName(context, FocusDeviceAdminReceiver::class.java)
+    override val packageName: String = context.packageName
 
-    fun isAdminActive(): Boolean = dpm.isAdminActive(adminComponent)
+    override fun isAdminActive(): Boolean = dpm.isAdminActive(adminComponent)
 
-    fun isDeviceOwner(): Boolean = dpm.isDeviceOwnerApp(packageName)
+    override fun isDeviceOwner(): Boolean = dpm.isDeviceOwnerApp(packageName)
 
-    fun clearDeviceOwnerApp() {
+    override fun clearDeviceOwnerApp() {
         dpm.clearDeviceOwnerApp(packageName)
     }
 
-    fun setLockTaskPackages(packages: List<String>) {
+    override fun setLockTaskPackages(packages: List<String>) {
         dpm.setLockTaskPackages(adminComponent, packages.toTypedArray())
     }
 
-    fun setLockTaskFeatures(features: Int) {
+    override fun setLockTaskFeatures(features: Int) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             dpm.setLockTaskFeatures(adminComponent, features)
         }
     }
 
-    fun getLockTaskFeatures(): Int? {
+    override fun getLockTaskFeatures(): Int? {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             dpm.getLockTaskFeatures(adminComponent)
         } else {
@@ -51,7 +89,7 @@ class DevicePolicyFacade(private val context: Context) {
         }
     }
 
-    fun getLockTaskPackages(): List<String> {
+    override fun getLockTaskPackages(): List<String> {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             dpm.getLockTaskPackages(adminComponent).toList()
         } else {
@@ -59,19 +97,19 @@ class DevicePolicyFacade(private val context: Context) {
         }
     }
 
-    fun setStatusBarDisabled(disabled: Boolean): Boolean? {
+    override fun setStatusBarDisabled(disabled: Boolean): Boolean? {
         return dpm.setStatusBarDisabled(adminComponent, disabled)
     }
 
-    fun setAlwaysOnVpnPackage(vpnPackage: String?, lockdownEnabled: Boolean) {
+    override fun setAlwaysOnVpnPackage(vpnPackage: String?, lockdownEnabled: Boolean) {
         dpm.setAlwaysOnVpnPackage(adminComponent, vpnPackage, lockdownEnabled)
     }
 
-    fun getAlwaysOnVpnPackage(): String? {
+    override fun getAlwaysOnVpnPackage(): String? {
         return dpm.getAlwaysOnVpnPackage(adminComponent)
     }
 
-    fun isAlwaysOnVpnLockdownEnabled(): Boolean? {
+    override fun isAlwaysOnVpnLockdownEnabled(): Boolean? {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             dpm.isAlwaysOnVpnLockdownEnabled(adminComponent)
         } else {
@@ -79,7 +117,7 @@ class DevicePolicyFacade(private val context: Context) {
         }
     }
 
-    fun getGlobalPrivateDnsMode(): Int? {
+    override fun getGlobalPrivateDnsMode(): Int? {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             dpm.getGlobalPrivateDnsMode(adminComponent)
         } else {
@@ -87,7 +125,7 @@ class DevicePolicyFacade(private val context: Context) {
         }
     }
 
-    fun getGlobalPrivateDnsHost(): String? {
+    override fun getGlobalPrivateDnsHost(): String? {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             dpm.getGlobalPrivateDnsHost(adminComponent)
         } else {
@@ -95,9 +133,9 @@ class DevicePolicyFacade(private val context: Context) {
         }
     }
 
-    fun supportsGlobalPrivateDns(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+    override fun supportsGlobalPrivateDns(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
 
-    fun setGlobalPrivateDnsModeOpportunistic(): Int? {
+    override fun setGlobalPrivateDnsModeOpportunistic(): Int? {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             dpm.setGlobalPrivateDnsModeOpportunistic(adminComponent)
         } else {
@@ -105,7 +143,7 @@ class DevicePolicyFacade(private val context: Context) {
         }
     }
 
-    fun setGlobalPrivateDnsModeSpecifiedHost(host: String): Int? {
+    override fun setGlobalPrivateDnsModeSpecifiedHost(host: String): Int? {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             dpm.setGlobalPrivateDnsModeSpecifiedHost(adminComponent, host)
         } else {
@@ -113,7 +151,7 @@ class DevicePolicyFacade(private val context: Context) {
         }
     }
 
-    fun setPackagesSuspended(packages: List<String>, suspended: Boolean): PackageSuspendResult {
+    override fun setPackagesSuspended(packages: List<String>, suspended: Boolean): PackageSuspendResult {
         if (packages.isEmpty()) {
             return PackageSuspendResult(
                 failedPackages = emptySet(),
@@ -144,17 +182,17 @@ class DevicePolicyFacade(private val context: Context) {
         )
     }
 
-    fun setUninstallBlocked(packageName: String, blocked: Boolean) {
+    override fun setUninstallBlocked(packageName: String, blocked: Boolean) {
         dpm.setUninstallBlocked(adminComponent, packageName, blocked)
     }
 
-    fun isUninstallBlocked(packageName: String): Boolean {
+    override fun isUninstallBlocked(packageName: String): Boolean {
         return dpm.isUninstallBlocked(adminComponent, packageName)
     }
 
-    fun supportsUserControlDisabledPackages(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+    override fun supportsUserControlDisabledPackages(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
 
-    fun setUserControlDisabledPackages(packages: List<String>) {
+    override fun setUserControlDisabledPackages(packages: List<String>) {
         if (!supportsUserControlDisabledPackages()) return
         val normalizedPackages = packages.asSequence()
             .map(String::trim)
@@ -165,30 +203,30 @@ class DevicePolicyFacade(private val context: Context) {
         dpm.setUserControlDisabledPackages(adminComponent, normalizedPackages)
     }
 
-    fun getUserControlDisabledPackages(): Set<String> {
+    override fun getUserControlDisabledPackages(): Set<String> {
         if (!supportsUserControlDisabledPackages()) return emptySet()
         return dpm.getUserControlDisabledPackages(adminComponent).toSet()
     }
 
-    fun addUserRestriction(restriction: String) {
+    override fun addUserRestriction(restriction: String) {
         dpm.addUserRestriction(adminComponent, restriction)
     }
 
-    fun clearUserRestriction(restriction: String) {
+    override fun clearUserRestriction(restriction: String) {
         dpm.clearUserRestriction(adminComponent, restriction)
     }
 
-    fun hasUserRestriction(restriction: String): Boolean = userManager.hasUserRestriction(restriction)
+    override fun hasUserRestriction(restriction: String): Boolean = userManager.hasUserRestriction(restriction)
 
-    fun setAutoTimeRequired(required: Boolean) {
+    override fun setAutoTimeRequired(required: Boolean) {
         dpm.setAutoTimeRequired(adminComponent, required)
     }
 
-    fun isAutoTimeRequired(): Boolean = dpm.autoTimeRequired
+    override fun isAutoTimeRequired(): Boolean = dpm.autoTimeRequired
 
-    fun canVerifyPackageSuspension(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+    override fun canVerifyPackageSuspension(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
 
-    fun isPackageSuspended(packageName: String): Boolean? {
+    override fun isPackageSuspended(packageName: String): Boolean? {
         if (!canVerifyPackageSuspension()) return null
         return try {
             packageManager.isPackageSuspended(packageName)
@@ -199,9 +237,9 @@ class DevicePolicyFacade(private val context: Context) {
         }
     }
 
-    fun lockTaskModeState(): Int? = activityManager?.lockTaskModeState
+    override fun lockTaskModeState(): Int? = activityManager?.lockTaskModeState
 
-    fun isHomeAppPinnedToSelf(): Boolean? {
+    override fun isHomeAppPinnedToSelf(): Boolean? {
         val intent = android.content.Intent(android.content.Intent.ACTION_MAIN).addCategory(
             android.content.Intent.CATEGORY_HOME
         )
@@ -210,7 +248,7 @@ class DevicePolicyFacade(private val context: Context) {
         return resolved.activityInfo?.packageName == packageName
     }
 
-    fun setAsHomeForKiosk(enabled: Boolean) {
+    override fun setAsHomeForKiosk(enabled: Boolean) {
         if (enabled) {
             val filter = android.content.IntentFilter(android.content.Intent.ACTION_MAIN).apply {
                 addCategory(android.content.Intent.CATEGORY_HOME)

@@ -33,13 +33,18 @@ data class EmergencyUnlockResult(
     val state: EmergencyState?
 )
 
-class BudgetOrchestrator(context: Context) {
+internal interface PolicyBudgetClient {
+    suspend fun readUsageSnapshot(now: ZonedDateTime = ZonedDateTime.now()): UsageSnapshotResult
+    suspend fun getActiveEmergencyStates(now: ZonedDateTime = ZonedDateTime.now()): List<EmergencyState>
+}
+
+internal class BudgetOrchestrator(context: Context) : PolicyBudgetClient {
     private val appContext = context.applicationContext
     private val db by lazy { FocusDatabase.get(appContext) }
     private val usageReader by lazy { UsageReader(appContext) }
     private val usageStatsManager by lazy { appContext.getSystemService(UsageStatsManager::class.java) }
 
-    suspend fun readUsageSnapshot(now: ZonedDateTime = ZonedDateTime.now()): UsageSnapshotResult = withContext(Dispatchers.IO) {
+    override suspend fun readUsageSnapshot(now: ZonedDateTime = ZonedDateTime.now()): UsageSnapshotResult = withContext(Dispatchers.IO) {
         FocusLog.d(FocusEventId.BUDGET_SNAPSHOT, "┌── readUsageSnapshot()")
         val boundaryCheckAtMs = minOf(
             UsageWindow.nextHourStartMs(now),
@@ -171,7 +176,7 @@ class BudgetOrchestrator(context: Context) {
         db.budgetDao().getCurrentOrActiveEmergencyStates(dayKey, nowMs)
     }
 
-    suspend fun getActiveEmergencyStates(now: ZonedDateTime = ZonedDateTime.now()): List<EmergencyState> = withContext(Dispatchers.IO) {
+    override suspend fun getActiveEmergencyStates(now: ZonedDateTime = ZonedDateTime.now()): List<EmergencyState> = withContext(Dispatchers.IO) {
         val dayKey = UsageWindow.dayKey(now)
         val nowMs = now.toInstant().toEpochMilli()
         db.budgetDao().clearExpiredEmergencyStateBefore(dayKey, nowMs)

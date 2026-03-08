@@ -2,8 +2,8 @@ package com.ankit.destination.policy
 
 import com.ankit.destination.data.GlobalControls
 
-class PolicyEvaluator(
-    private val packageResolver: PackageResolver,
+internal class PolicyEvaluator(
+    private val packageResolver: PackageResolverClient,
     private val controllerPackageName: String
 ) {
     fun evaluate(

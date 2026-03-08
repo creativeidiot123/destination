@@ -10,7 +10,28 @@ import android.provider.Settings
 import android.provider.Telephony
 import android.telecom.TelecomManager
 
-class PackageResolver(private val context: Context) {
+internal enum class SuspendabilityStatus {
+    SUSPENDABLE,
+    ALLOWLISTED,
+    NOT_INSTALLED,
+    PROTECTED
+}
+
+internal interface PackageResolverClient {
+    fun resolveAllowlist(
+        userChosenEmergencyApps: Set<String>,
+        alwaysAllowedApps: Set<String> = emptySet()
+    ): AllowlistResolution
+
+    fun computeUsageAccessRecoverySuspendTargets(recoveryAllowlist: Set<String>): Set<String>
+    fun filterSuspendable(packages: Set<String>, allowlist: Set<String>): Set<String>
+    fun resolveUsageAccessRecoveryPackages(): PackageResolver.UsageAccessRecoveryResolution
+    fun isPackageInstalled(packageName: String): Boolean
+    fun packageLabelOrPackage(packageName: String): String
+    fun suspendabilityStatus(packageName: String, allowlist: Set<String>): SuspendabilityStatus
+}
+
+internal class PackageResolver(private val context: Context) : PackageResolverClient {
     private val packageManager: PackageManager = context.packageManager
 
     data class UsageAccessRecoveryResolution(
@@ -20,7 +41,7 @@ class PackageResolver(private val context: Context) {
         val warnings: List<String>
     )
 
-    fun resolveAllowlist(
+    override fun resolveAllowlist(
         userChosenEmergencyApps: Set<String>,
         alwaysAllowedApps: Set<String> = emptySet()
     ): AllowlistResolution {
@@ -87,7 +108,7 @@ class PackageResolver(private val context: Context) {
         return targets
     }
 
-    fun computeUsageAccessRecoverySuspendTargets(recoveryAllowlist: Set<String>): Set<String> {
+    override fun computeUsageAccessRecoverySuspendTargets(recoveryAllowlist: Set<String>): Set<String> {
         return computeUsageAccessRecoverySuspendTargets(
             launchablePackages = resolveLaunchablePackages(),
             recoveryAllowlist = recoveryAllowlist,
@@ -96,7 +117,7 @@ class PackageResolver(private val context: Context) {
         )
     }
 
-    fun filterSuspendable(packages: Set<String>, allowlist: Set<String>): Set<String> {
+    override fun filterSuspendable(packages: Set<String>, allowlist: Set<String>): Set<String> {
         val result = packages
             .asSequence()
             .map(String::trim)
@@ -117,7 +138,16 @@ class PackageResolver(private val context: Context) {
         return result
     }
 
-    fun resolveUsageAccessRecoveryPackages(): UsageAccessRecoveryResolution {
+    override fun suspendabilityStatus(packageName: String, allowlist: Set<String>): SuspendabilityStatus {
+        val normalized = packageName.trim()
+        if (normalized.isBlank()) return SuspendabilityStatus.NOT_INSTALLED
+        if (allowlist.contains(normalized)) return SuspendabilityStatus.ALLOWLISTED
+        if (!isInstalled(normalized)) return SuspendabilityStatus.NOT_INSTALLED
+        if (isProtectedPackage(normalized)) return SuspendabilityStatus.PROTECTED
+        return SuspendabilityStatus.SUSPENDABLE
+    }
+
+    override fun resolveUsageAccessRecoveryPackages(): UsageAccessRecoveryResolution {
         val launcherPackages = resolveLauncherPackages()
         val usageAccessSettingsPackages = resolveIntentPackages(
             Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
@@ -157,9 +187,9 @@ class PackageResolver(private val context: Context) {
             .toSet()
     }
 
-    fun isPackageInstalled(packageName: String): Boolean = isInstalled(packageName)
+    override fun isPackageInstalled(packageName: String): Boolean = isInstalled(packageName)
 
-    fun packageLabelOrPackage(packageName: String): String {
+    override fun packageLabelOrPackage(packageName: String): String {
         return try {
             val appInfo = packageManager.getApplicationInfo(packageName, 0)
             packageManager.getApplicationLabel(appInfo).toString()
@@ -302,5 +332,3 @@ class PackageResolver(private val context: Context) {
         }
     }
 }
-
-

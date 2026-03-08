@@ -1,14 +1,18 @@
 package com.ankit.destination
 
+import com.ankit.destination.data.ScheduleBlock
+import com.ankit.destination.data.ScheduleBlockKind
 import com.ankit.destination.policy.ModeState
 import com.ankit.destination.policy.EmergencyConfigInput
 import com.ankit.destination.policy.GroupPolicyInput
 import com.ankit.destination.policy.PolicyEngine
+import com.ankit.destination.schedule.ScheduleDecision
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.ZonedDateTime
 
 class PolicyEngineLogicTest {
 
@@ -220,5 +224,83 @@ class PolicyEngineLogicTest {
         assertNull(PolicyEngine.decodeSingleAppScheduleTarget("group:com.example"))
         assertNull(PolicyEngine.decodeSingleAppScheduleTarget(""))
         assertFalse(PolicyEngine.isSingleAppScheduleTarget(""))
+    }
+
+    @Test
+    fun resolveLiveScheduleState_marksAppOnlySchedulesActiveAndStrict() {
+        val state = PolicyEngine.resolveLiveScheduleState(
+            scheduleDecision = ScheduleDecision(
+                shouldLock = false,
+                strictActive = false,
+                blockedGroupIds = emptySet(),
+                reason = "Outside scheduled blocks",
+                activeBlockIds = setOf(7L),
+                nextTransitionAt = ZonedDateTime.parse("2026-01-05T11:00:00Z")
+            ),
+            scheduleBlocks = listOf(
+                ScheduleBlock(
+                    id = 7L,
+                    name = "Solo app",
+                    daysMask = 1,
+                    startMinute = 600,
+                    endMinute = 660,
+                    kind = ScheduleBlockKind.GROUPS.name,
+                    strict = true
+                )
+            ),
+            targetedActiveBlockIds = setOf(7L),
+            scheduledGroupIds = emptySet(),
+            scheduledAppPackages = setOf("com.example.app")
+        )
+
+        assertTrue(state.active)
+        assertTrue(state.strictActive)
+        assertTrue(state.blockedGroupIds.isEmpty())
+        assertEquals(setOf("com.example.app"), state.blockedAppPackages)
+        assertTrue(state.reason.contains("app schedule", ignoreCase = true))
+    }
+
+    @Test
+    fun resolveLiveScheduleState_keepsHelperReasonWhenNoTargetsResolve() {
+        val state = PolicyEngine.resolveLiveScheduleState(
+            scheduleDecision = ScheduleDecision(
+                shouldLock = false,
+                strictActive = false,
+                blockedGroupIds = emptySet(),
+                reason = "Group schedule active: Strict social",
+                activeBlockIds = setOf(5L),
+                nextTransitionAt = ZonedDateTime.parse("2026-01-05T11:00:00Z")
+            ),
+            scheduleBlocks = emptyList(),
+            targetedActiveBlockIds = emptySet(),
+            scheduledGroupIds = emptySet(),
+            scheduledAppPackages = emptySet()
+        )
+
+        assertFalse(state.active)
+        assertFalse(state.strictActive)
+        assertEquals("Group schedule active: Strict social", state.reason)
+    }
+
+    @Test
+    fun shouldRefreshStrictScheduleForInstall_whenTransitionIsOverdue() {
+        assertTrue(
+            PolicyEngine.shouldRefreshStrictScheduleForInstall(
+                scheduleStrictComputed = true,
+                scheduleNextTransitionAtMs = 10_000L,
+                nowMs = 10_000L
+            )
+        )
+    }
+
+    @Test
+    fun shouldRefreshStrictScheduleForInstall_whenStrictStateIsStillFresh() {
+        assertFalse(
+            PolicyEngine.shouldRefreshStrictScheduleForInstall(
+                scheduleStrictComputed = true,
+                scheduleNextTransitionAtMs = 20_000L,
+                nowMs = 10_000L
+            )
+        )
     }
 }

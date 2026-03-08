@@ -8,7 +8,7 @@ import android.os.Looper
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
-class PolicyApplier(private val facade: DevicePolicyFacade) {
+internal class PolicyApplier(private val facade: DevicePolicyClient) {
 
     fun apply(state: PolicyState, hostActivity: Activity? = null): ApplyResult {
         FocusLog.d(FocusEventId.POLICY_APPLY_START, "┌── PolicyApplier.apply() START ──")
@@ -133,21 +133,29 @@ class PolicyApplier(private val facade: DevicePolicyFacade) {
         if (toUnsuspend.isNotEmpty()) {
             FocusLog.d(FocusEventId.SUSPEND_TARGET, "│   unsuspending: ${toUnsuspend.joinToString(",")}")
         }
-        val suspendResult = facade.setPackagesSuspended(
-            packages = toSuspend.toList(),
-            suspended = true
-        )
-        val failedToSuspend = suspendResult.failedPackages
-        suspendResult.errors.forEach { error ->
-            errors += "setPackagesSuspended(true) failed: $error"
-        }
-        val unsuspendResult = facade.setPackagesSuspended(
-            packages = toUnsuspend.toList(),
-            suspended = false
-        )
-        val failedToUnsuspend = unsuspendResult.failedPackages
-        unsuspendResult.errors.forEach { error ->
-            errors += "setPackagesSuspended(false) failed: $error"
+        val failedToSuspend: Set<String>
+        val failedToUnsuspend: Set<String>
+        if (toSuspend.isEmpty() && toUnsuspend.isEmpty()) {
+            FocusLog.d(FocusEventId.SUSPEND_TARGET, "suspension state unchanged; skipping DPM suspend calls")
+            failedToSuspend = emptySet()
+            failedToUnsuspend = emptySet()
+        } else {
+            val suspendResult = facade.setPackagesSuspended(
+                packages = toSuspend.toList(),
+                suspended = true
+            )
+            failedToSuspend = suspendResult.failedPackages
+            suspendResult.errors.forEach { error ->
+                errors += "setPackagesSuspended(true) failed: $error"
+            }
+            val unsuspendResult = facade.setPackagesSuspended(
+                packages = toUnsuspend.toList(),
+                suspended = false
+            )
+            failedToUnsuspend = unsuspendResult.failedPackages
+            unsuspendResult.errors.forEach { error ->
+                errors += "setPackagesSuspended(false) failed: $error"
+            }
         }
         if (failedToSuspend.isNotEmpty()) {
             errors += "Packages failed to suspend: ${failedToSuspend.sorted().joinToString(", ")}"

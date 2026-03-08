@@ -81,6 +81,7 @@ data class DiagnosticsSnapshot(
     val scheduleStrictComputed: Boolean,
     val scheduleStrictActive: Boolean,
     val scheduleBlockedGroups: Set<String>,
+    val scheduleBlockedPackages: Set<String>,
     val scheduleLockReason: String?,
     val scheduleNextTransitionAtMs: Long?,
     val budgetBlockedPackages: Set<String>,
@@ -122,5 +123,24 @@ data class DiagnosticsSnapshot(
     val alwaysBlockedApps: Set<String>,
     val uninstallProtectedApps: Set<String>,
     val globalControls: GlobalControls,
-    val primaryReasonByPackage: Map<String, String>
+    val primaryReasonByPackage: Map<String, String>,
+    val packageDiagnostics: List<PackageDiagnostics>
+)
+
+enum class PackageDiagnosticsDisposition {
+    SUSPEND_TARGET,
+    ELIGIBLE_NOT_ACTIVE,
+    ALLOWLISTED,
+    PROTECTED,
+    NOT_INSTALLED
+}
+
+data class PackageDiagnostics(
+    val packageName: String,
+    val activeReasons: Set<String>,
+    val primaryReason: String?,
+    val disposition: PackageDiagnosticsDisposition,
+    val allowlistReason: String?,
+    val fromStrictInstallSuspended: Boolean,
+    val nextPotentialClearEvent: String
 )

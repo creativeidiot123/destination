@@ -3,7 +3,7 @@ package com.ankit.destination.ui.groups
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -64,8 +64,6 @@ import com.ankit.destination.policy.PolicyEngine
 import com.ankit.destination.security.AppLockManager
 import com.ankit.destination.ui.components.AdminSessionBanner
 import com.ankit.destination.ui.components.AdminSessionDialog
-import com.ankit.destination.ui.components.AnimatedNumberCounter
-import com.ankit.destination.ui.components.bouncyClickable
 import com.ankit.destination.ui.components.collectAsStateWithLifecycleCompat
 import com.ankit.destination.ui.components.showShortToast
 import kotlinx.coroutines.flow.collectLatest
@@ -234,7 +232,6 @@ fun GroupListScreen(
                 }
 
                 items(filteredGroups, key = { it.groupId }) { group ->
-                    val interactionSource = remember { MutableInteractionSource() }
                     val showEmergencyButton = group.effectiveBlocked && group.emergencyEnabled
                     val emergencyActionInProgress = uiState.activatingEmergencyGroupId == group.groupId
                     val emergencyActionEnabled = showEmergencyButton &&
@@ -244,7 +241,7 @@ fun GroupListScreen(
                     ElevatedCard(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .bouncyClickable(interactionSource = interactionSource) {
+                            .clickable {
                                 toast("Opening ${group.name}.")
                                 viewModel.attemptEditGroup(group.groupId) { onNavigateToGroupDetail(it) }
                             },
@@ -301,7 +298,11 @@ fun GroupListScreen(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Icon(Icons.Default.Apps, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
                                 Spacer(modifier = Modifier.width(6.dp))
-                                AnimatedNumberCounter(targetValue = group.appCount, textStyle = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, suffix = " apps")
+                                Text(
+                                    text = "${group.appCount} apps",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                             Spacer(modifier = Modifier.height(4.dp))
                             Row(verticalAlignment = Alignment.CenterVertically) {

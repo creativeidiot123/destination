@@ -29,6 +29,13 @@ data class BudgetDecision(
     val blockedGroupIds: Set<String>
 )
 
+/**
+ * Secondary helper only.
+ *
+ * Runtime enforcement is authoritative only through
+ * `PolicyEngine.orchestrateCurrentPolicy() -> EffectivePolicyEvaluator`.
+ * Keep this helper aligned for tests/reporting, but do not treat it as the live path.
+ */
 object UsageBudgetEvaluator {
     fun evaluate(
         usedTodayMs: Map<String, Long>,
