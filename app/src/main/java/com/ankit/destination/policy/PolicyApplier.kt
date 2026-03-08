@@ -140,21 +140,29 @@ internal class PolicyApplier(private val facade: DevicePolicyClient) {
             failedToSuspend = emptySet()
             failedToUnsuspend = emptySet()
         } else {
-            val suspendResult = facade.setPackagesSuspended(
-                packages = toSuspend.toList(),
-                suspended = true
-            )
-            failedToSuspend = suspendResult.failedPackages
-            suspendResult.errors.forEach { error ->
-                errors += "setPackagesSuspended(true) failed: $error"
+            if (toSuspend.isNotEmpty()) {
+                val suspendResult = facade.setPackagesSuspended(
+                    packages = toSuspend.toList(),
+                    suspended = true
+                )
+                failedToSuspend = suspendResult.failedPackages
+                suspendResult.errors.forEach { error ->
+                    errors += "setPackagesSuspended(true) failed: $error"
+                }
+            } else {
+                failedToSuspend = emptySet()
             }
-            val unsuspendResult = facade.setPackagesSuspended(
-                packages = toUnsuspend.toList(),
-                suspended = false
-            )
-            failedToUnsuspend = unsuspendResult.failedPackages
-            unsuspendResult.errors.forEach { error ->
-                errors += "setPackagesSuspended(false) failed: $error"
+            if (toUnsuspend.isNotEmpty()) {
+                val unsuspendResult = facade.setPackagesSuspended(
+                    packages = toUnsuspend.toList(),
+                    suspended = false
+                )
+                failedToUnsuspend = unsuspendResult.failedPackages
+                unsuspendResult.errors.forEach { error ->
+                    errors += "setPackagesSuspended(false) failed: $error"
+                }
+            } else {
+                failedToUnsuspend = emptySet()
             }
         }
         if (failedToSuspend.isNotEmpty()) {

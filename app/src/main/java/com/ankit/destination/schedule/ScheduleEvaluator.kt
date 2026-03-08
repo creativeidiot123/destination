@@ -46,6 +46,7 @@ object ScheduleEvaluator {
         val reason = when {
             shouldLock && strictActive -> "Strict group schedule active: $groupNames"
             shouldLock -> "Group schedule active: $groupNames"
+            activeGroups.isNotEmpty() -> "Group schedule active: $groupNames"
             else -> "Outside scheduled blocks"
         }
 
