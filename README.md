@@ -89,7 +89,15 @@ adb shell dpm set-device-owner com.ankit.destination/.admin.FocusDeviceAdminRece
 adb shell cmd appops set com.ankit.destination GET_USAGE_STATS allow
 ```
 
-### Step 5 — You're done
+### Step 5 — Grant Accessibility
+
+```bash
+adb shell settings put secure enabled_accessibility_services com.ankit.destination/com.ankit.destination.YourAccessibilityService```
+
+```bash
+adb shell settings put secure accessibility_enabled 1```
+
+### Step 6 — You're done
 
 Open Destination, then re-add your Google and device accounts. That's it.
 
