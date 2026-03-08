@@ -93,10 +93,11 @@ adb shell cmd appops set com.ankit.destination GET_USAGE_STATS allow
 
 ```bash
 adb shell settings put secure enabled_accessibility_services com.ankit.destination/com.ankit.destination.YourAccessibilityService```
-
+```
 ```bash
 adb shell settings put secure accessibility_enabled 1```
 
+```
 ### Step 6 — You're done
 
 Open Destination, then re-add your Google and device accounts. That's it.
