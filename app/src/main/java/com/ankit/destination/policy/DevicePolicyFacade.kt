@@ -60,9 +60,17 @@ internal class DevicePolicyFacade(private val context: Context) : DevicePolicyCl
     private val userManager = context.getSystemService(UserManager::class.java)
     private val activityManager = context.getSystemService(ActivityManager::class.java)
     private val packageManager: PackageManager = context.packageManager
+    private val policyStore = PolicyStore(context)
 
     override val adminComponent: ComponentName = ComponentName(context, FocusDeviceAdminReceiver::class.java)
     override val packageName: String = context.packageName
+
+    private val hiddenPackageSuspendBackend: PackageSuspendBackend by lazy {
+        HiddenPackageSuspendBackend(packageManager)
+    }
+    private val dpmPackageSuspendBackend: PackageSuspendBackend by lazy {
+        DpmPackageSuspendBackend(dpm, adminComponent)
+    }
 
     override fun isAdminActive(): Boolean = dpm.isAdminActive(adminComponent)
 
@@ -163,9 +171,16 @@ internal class DevicePolicyFacade(private val context: Context) : DevicePolicyCl
                 errors = emptyList()
             )
         }
-        // DPM calls are binder transactions; chunk to avoid TransactionTooLarge on app-heavy devices.
+        // Package suspension uses binder calls; chunk to avoid TransactionTooLarge on app-heavy devices.
         val failed = linkedSetOf<String>()
         val errors = mutableListOf<String>()
+        val backendStatuses = mutableListOf<PackageSuspendBackendStatus>()
+        var hiddenPrototypeError: String? = null
+        val options = buildPackageSuspendCallOptions(suspended)
+        val packageSuspendCoordinator = PackageSuspendCoordinator(
+            hiddenBackend = hiddenPackageSuspendBackend.takeIf { policyStore.isHiddenSuspendPrototypeEnabled() },
+            dpmBackend = dpmPackageSuspendBackend
+        )
         packages.asSequence()
             .map(String::trim)
             .filter(String::isNotBlank)
@@ -173,14 +188,42 @@ internal class DevicePolicyFacade(private val context: Context) : DevicePolicyCl
             .chunked(SUSPEND_CHUNK_SIZE)
             .forEach { chunk ->
                 runCatching {
-                    dpm.setPackagesSuspended(adminComponent, chunk.toTypedArray(), suspended).toSet()
-                }.onSuccess { chunkFailures ->
-                    failed += chunkFailures
+                    packageSuspendCoordinator.setPackagesSuspended(chunk, options)
+                }.onSuccess { outcome ->
+                    failed += outcome.result.failedPackages
+                    backendStatuses += outcome.status.backend
+                    if (hiddenPrototypeError == null) {
+                        hiddenPrototypeError = outcome.status.hiddenErrorMessage
+                    }
+                    if (outcome.status.backend == PackageSuspendBackendStatus.HIDDEN) {
+                        FocusLog.d(
+                            FocusEventId.SUSPEND_TARGET,
+                            "Hidden suspend prototype used for ${chunk.size} packages suspended=$suspended"
+                        )
+                    } else if (outcome.status.backend == PackageSuspendBackendStatus.DPM_FALLBACK) {
+                        FocusLog.w(
+                            FocusEventId.SUSPEND_TARGET,
+                            "Hidden suspend prototype fell back to DPM: ${outcome.status.hiddenErrorMessage}"
+                        )
+                    }
                 }.onFailure {
                     failed += chunk
                     errors += it.message ?: it.javaClass.simpleName
                 }
             }
+        if (backendStatuses.isNotEmpty()) {
+            val aggregateBackend = when {
+                backendStatuses.contains(PackageSuspendBackendStatus.DPM_FALLBACK) ->
+                    PackageSuspendBackendStatus.DPM_FALLBACK
+                backendStatuses.contains(PackageSuspendBackendStatus.HIDDEN) ->
+                    PackageSuspendBackendStatus.HIDDEN
+                else -> PackageSuspendBackendStatus.DPM_ONLY
+            }
+            policyStore.setLastPackageSuspendPrototypeStatus(
+                backend = aggregateBackend,
+                errorMessage = hiddenPrototypeError
+            )
+        }
         return PackageSuspendResult(
             failedPackages = failed,
             errors = errors

@@ -11,6 +11,8 @@ import com.ankit.destination.data.AppPolicy
 import com.ankit.destination.data.FocusDatabase
 import com.ankit.destination.policy.PolicyEngine
 import com.ankit.destination.security.AppLockManager
+import com.ankit.destination.ui.UiInvalidationBus
+import com.ankit.destination.ui.runCatchingNonCancellation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -71,45 +73,63 @@ class AppDetailViewModel(
     )
     val events = _events
 
+    init {
+        refresh()
+    }
+
     fun refresh() {
         viewModelScope.launch {
             val previous = _uiState.value
             _uiState.update { it.copy(isLoading = true) }
             val refreshed = withContext(Dispatchers.IO) {
-                val policy = db.budgetDao().getAppPolicy(packageName)
-                val usageInputs = budgetOrchestrator.readUsageSnapshot().usageInputs
-                val protectionSnapshot = policyEngine.getAppProtectionSnapshotAsync()
-                val label = runCatching {
-                    val appInfo = appContext.packageManager.getApplicationInfo(packageName, 0)
-                    appContext.packageManager.getApplicationLabel(appInfo).toString()
-                }.getOrDefault(packageName)
-                AppDetailUiState(
-                    packageName = packageName,
-                    label = label,
-                    isLoading = false,
-                    isAllowlisted = protectionSnapshot.isAllowlisted(packageName),
-                    isHidden = protectionSnapshot.isHidden(packageName),
-                    ineligibilityReason = protectionSnapshot.manualPolicyIneligibilityReason(packageName),
-                    adminSessionActive = appLockManager.isAdminSessionActive(),
-                    adminSessionRemainingMs = appLockManager.getSessionRemainingMs(),
-                    restrictHourly = (policy?.hourlyLimitMs ?: 0L) > 0L,
-                    hourlyLimitMs = policy?.hourlyLimitMs?.coerceAtLeast(0L) ?: 0L,
-                    restrictDaily = (policy?.dailyLimitMs ?: 0L) > 0L,
-                    dailyLimitMs = policy?.dailyLimitMs?.coerceAtLeast(0L) ?: 0L,
-                    restrictOpens = (policy?.opensPerDay ?: 0) > 0,
-                    opensLimit = policy?.opensPerDay?.coerceAtLeast(0) ?: 0,
-                    usedTodayMs = usageInputs.usedTodayMs[packageName] ?: 0L,
-                    usedHourMs = usageInputs.usedHourMs[packageName] ?: 0L,
-                    opensToday = usageInputs.opensToday[packageName] ?: 0,
-                    isEmergencyEnabled = policy?.emergencyEnabled ?: false,
-                    emergencyUnlocksPerDay = clampEmergencyUnlocksPerDay(policy?.unlocksPerDay ?: 0),
-                    emergencyMinutesPerUnlock = clampEmergencyMinutesPerUnlock(policy?.minutesPerUnlock ?: 0)
-                )
+                runCatchingNonCancellation {
+                    val policy = db.budgetDao().getAppPolicy(packageName)
+                    val usageInputs = budgetOrchestrator.readUsageSnapshot().usageInputs
+                    val protectionSnapshot = policyEngine.getAppProtectionSnapshotAsync()
+                    val label = runCatching {
+                        val appInfo = appContext.packageManager.getApplicationInfo(packageName, 0)
+                        appContext.packageManager.getApplicationLabel(appInfo).toString()
+                    }.getOrDefault(packageName)
+                    AppDetailUiState(
+                        packageName = packageName,
+                        label = label,
+                        isLoading = false,
+                        isAllowlisted = protectionSnapshot.isAllowlisted(packageName),
+                        isHidden = protectionSnapshot.isHidden(packageName),
+                        ineligibilityReason = protectionSnapshot.manualPolicyIneligibilityReason(packageName),
+                        adminSessionActive = appLockManager.isAdminSessionActive(),
+                        adminSessionRemainingMs = appLockManager.getSessionRemainingMs(),
+                        restrictHourly = (policy?.hourlyLimitMs ?: 0L) > 0L,
+                        hourlyLimitMs = policy?.hourlyLimitMs?.coerceAtLeast(0L) ?: 0L,
+                        restrictDaily = (policy?.dailyLimitMs ?: 0L) > 0L,
+                        dailyLimitMs = policy?.dailyLimitMs?.coerceAtLeast(0L) ?: 0L,
+                        restrictOpens = (policy?.opensPerDay ?: 0) > 0,
+                        opensLimit = policy?.opensPerDay?.coerceAtLeast(0) ?: 0,
+                        usedTodayMs = usageInputs.usedTodayMs[packageName] ?: 0L,
+                        usedHourMs = usageInputs.usedHourMs[packageName] ?: 0L,
+                        opensToday = usageInputs.opensToday[packageName] ?: 0,
+                        isEmergencyEnabled = policy?.emergencyEnabled ?: false,
+                        emergencyUnlocksPerDay = clampEmergencyUnlocksPerDay(policy?.unlocksPerDay ?: 0),
+                        emergencyMinutesPerUnlock = clampEmergencyMinutesPerUnlock(policy?.minutesPerUnlock ?: 0)
+                    )
+                }
             }
-            _uiState.value = refreshed.copy(
-                statusMessage = previous.statusMessage,
-                isError = previous.isError
-            )
+            refreshed.onSuccess { state ->
+                _uiState.value = state.copy(
+                    statusMessage = previous.statusMessage.takeIf { !previous.isError },
+                    isError = false
+                )
+            }.onFailure { throwable ->
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        adminSessionActive = appLockManager.isAdminSessionActive(),
+                        adminSessionRemainingMs = appLockManager.getSessionRemainingMs(),
+                        statusMessage = throwable.message ?: "Failed to load app rules.",
+                        isError = true
+                    )
+                }
+            }
         }
     }
 
@@ -195,7 +215,7 @@ class AppDetailViewModel(
             _uiState.update { it.copy(isLoading = true, statusMessage = null) }
             val state = _uiState.value
             val result = withContext(Dispatchers.IO) {
-                runCatching {
+                runCatchingNonCancellation {
                     db.budgetDao().upsertAppPolicy(
                         AppPolicy(
                             packageName = packageName,
@@ -216,6 +236,7 @@ class AppDetailViewModel(
             }
 
             result.onSuccess {
+                UiInvalidationBus.invalidate("app_detail_saved")
                 _uiState.update {
                     it.copy(
                         isLoading = false,

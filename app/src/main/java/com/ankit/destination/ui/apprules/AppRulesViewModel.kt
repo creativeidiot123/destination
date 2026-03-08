@@ -7,7 +7,10 @@ import com.ankit.destination.enforce.PolicyApplyOrchestrator
 import com.ankit.destination.policy.PolicyEngine
 import com.ankit.destination.security.AppLockManager
 import com.ankit.destination.ui.AppOption
+import com.ankit.destination.ui.RefreshCoordinator
+import com.ankit.destination.ui.UiInvalidationBus
 import com.ankit.destination.ui.loadInstalledAppOptions
+import com.ankit.destination.ui.runCatchingNonCancellation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -55,55 +58,94 @@ class AppRulesViewModel(
     private val policyEngine: PolicyEngine,
     private val appLockManager: AppLockManager
 ) : ViewModel() {
+    private val refreshCoordinator = RefreshCoordinator()
     private val _uiState = MutableStateFlow(AppRulesUiState())
     val uiState: StateFlow<AppRulesUiState> = _uiState.asStateFlow()
+    private var hasLoadedOnce = false
+    private var lastHandledInvalidationVersion = UiInvalidationBus.latest.value.version
 
-    fun refresh() {
+    init {
+        refresh(force = true)
+    }
+
+    fun refresh(force: Boolean = false) {
+        if (!refreshCoordinator.tryStart(force)) return
+
         viewModelScope.launch {
-            val previous = _uiState.value
-            _uiState.update { it.copy(isLoading = true) }
-            val adminActive = appLockManager.isAdminSessionActive()
-            val remainingMs = appLockManager.getSessionRemainingMs()
-
-            val loaded = withContext(Dispatchers.IO) {
-                val allow = policyEngine.getAlwaysAllowedAppsAsync()
-                val block = policyEngine.getAlwaysBlockedAppsAsync()
-                val uninstall = policyEngine.getUninstallProtectedAppsAsync()
-                val hiddenPackages = policyEngine.getHiddenAppsAsync()
-                    .asSequence()
-                    .map { it.packageName }
-                    .toSet()
-                val allPackages = (allow + block + uninstall) - hiddenPackages
-                val appOptions = loadInstalledAppOptions(
-                    context = appContext,
-                    includePackageNames = allPackages
-                )
-                val labelByPackage = appOptions.associateBy({ it.packageName }, { it.label })
-                val items = allPackages
-                    .map { packageName ->
-                        AppRuleItem(
-                            packageName = packageName,
-                            label = labelByPackage[packageName] ?: packageName,
-                            isAllowlist = allow.contains(packageName),
-                            isBlocklist = block.contains(packageName),
-                            isUninstallProtected = uninstall.contains(packageName)
-                        )
+            var shouldRerun: Boolean
+            do {
+                var loadSucceeded = false
+                try {
+                    val previous = _uiState.value
+                    if (!hasLoadedOnce) {
+                        _uiState.update { it.copy(isLoading = true) }
                     }
-                    .sortedBy { it.label.lowercase() }
-                AppRulesUiState(
-                    rules = items,
-                    availableApps = appOptions,
-                    isLoading = false,
-                    adminSessionActive = adminActive,
-                    adminSessionRemainingMs = remainingMs
-                )
-            }
-
-            _uiState.value = loaded.copy(
-                statusMessage = previous.statusMessage,
-                isError = previous.isError
-            )
+                    val loaded = withContext(Dispatchers.IO) {
+                        runCatchingNonCancellation {
+                            val allow = policyEngine.getAlwaysAllowedAppsAsync()
+                            val block = policyEngine.getAlwaysBlockedAppsAsync()
+                            val uninstall = policyEngine.getUninstallProtectedAppsAsync()
+                            val hiddenPackages = policyEngine.getHiddenAppsAsync()
+                                .asSequence()
+                                .map { it.packageName }
+                                .toSet()
+                            val allPackages = (allow + block + uninstall) - hiddenPackages
+                            val protectionSnapshot = policyEngine.getAppProtectionSnapshotAsync()
+                            val appOptions = loadInstalledAppOptions(
+                                context = appContext,
+                                includePackageNames = allPackages,
+                                protectionSnapshot = protectionSnapshot
+                            )
+                            val labelByPackage = appOptions.associateBy({ it.packageName }, { it.label })
+                            val items = allPackages
+                                .map { packageName ->
+                                    AppRuleItem(
+                                        packageName = packageName,
+                                        label = labelByPackage[packageName] ?: packageName,
+                                        isAllowlist = allow.contains(packageName),
+                                        isBlocklist = block.contains(packageName),
+                                        isUninstallProtected = uninstall.contains(packageName)
+                                    )
+                                }
+                                .sortedBy { it.label.lowercase() }
+                            AppRulesUiState(
+                                rules = items,
+                                availableApps = appOptions,
+                                isLoading = false,
+                                adminSessionActive = appLockManager.isAdminSessionActive(),
+                                adminSessionRemainingMs = appLockManager.getSessionRemainingMs()
+                            )
+                        }
+                    }
+                    loaded.onSuccess { state ->
+                        _uiState.value = state.copy(
+                            statusMessage = previous.statusMessage.takeIf { !previous.isError },
+                            isError = false
+                        )
+                        hasLoadedOnce = true
+                        loadSucceeded = true
+                    }.onFailure { throwable ->
+                        _uiState.update {
+                            it.copy(
+                                isLoading = false,
+                                adminSessionActive = appLockManager.isAdminSessionActive(),
+                                adminSessionRemainingMs = appLockManager.getSessionRemainingMs(),
+                                statusMessage = throwable.message ?: "Failed to load app rules.",
+                                isError = true
+                            )
+                        }
+                    }
+                } finally {
+                    shouldRerun = refreshCoordinator.finish(loadSucceeded)
+                }
+            } while (shouldRerun)
         }
+    }
+
+    fun onInvalidation(version: Long) {
+        if (version <= 0L || version <= lastHandledInvalidationVersion) return
+        lastHandledInvalidationVersion = version
+        refresh(force = true)
     }
 
     fun addRules(category: AppRuleCategory, packageNames: Set<String>) {
@@ -143,7 +185,7 @@ class AppRulesViewModel(
                 return@launch
             }
             val result = withContext(Dispatchers.IO) {
-                runCatching {
+                runCatchingNonCancellation {
                     sanitizedPackages.forEach { packageName ->
                         when (category) {
                             AppRuleCategory.ALLOWLIST -> policyEngine.addAlwaysAllowedAppAsync(packageName)
@@ -170,7 +212,7 @@ class AppRulesViewModel(
         }
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
-                runCatching {
+                runCatchingNonCancellation {
                     when (category) {
                         AppRuleCategory.ALLOWLIST -> policyEngine.removeAlwaysAllowedAppAsync(rule.packageName)
                         AppRuleCategory.BLOCKLIST -> policyEngine.removeAlwaysBlockedAppAsync(rule.packageName)
@@ -207,7 +249,7 @@ class AppRulesViewModel(
     private fun handleMutationResult(result: Result<*>, successMessage: String) {
         result.onSuccess {
             _uiState.update { it.copy(statusMessage = successMessage, isError = false) }
-            refresh()
+            UiInvalidationBus.invalidate("app_rules_updated")
         }.onFailure { throwable ->
             _uiState.update {
                 it.copy(

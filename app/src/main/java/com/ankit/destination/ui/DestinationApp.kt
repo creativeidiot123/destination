@@ -13,10 +13,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.rememberNavController
 import com.ankit.destination.policy.PolicyEngine
+import com.ankit.destination.security.AppLockManager
 import com.ankit.destination.ui.components.DeviceOwnerMissingOverlay
 import com.ankit.destination.ui.components.UsageAccessRecoveryBanner
 import com.ankit.destination.ui.components.collectAsStateWithLifecycleCompat
@@ -25,9 +25,10 @@ import com.ankit.destination.ui.navigation.DestinationNavGraph
 import com.ankit.destination.usage.UsageAccessMonitor
 
 @Composable
-fun DestinationApp() {
-    val context = LocalContext.current
-    val policyEngine = remember(context) { PolicyEngine(context.applicationContext) }
+fun DestinationApp(
+    policyEngine: PolicyEngine,
+    appLockManager: AppLockManager
+) {
     val navController = rememberNavController()
     val usageAccessState by UsageAccessMonitor.currentState.collectAsStateWithLifecycleCompat()
     val isDeviceOwner = remember(usageAccessState.lastCheckAtMs) {
@@ -65,6 +66,8 @@ fun DestinationApp() {
                     }
                     DestinationNavGraph(
                         navController = navController,
+                        policyEngine = policyEngine,
+                        appLockManager = appLockManager,
                         modifier = Modifier.weight(1f)
                     )
                 }

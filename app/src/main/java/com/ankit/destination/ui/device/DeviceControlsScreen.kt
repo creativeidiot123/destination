@@ -30,8 +30,8 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -45,16 +45,18 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ankit.destination.data.ManagedNetworkModeSetting
 import com.ankit.destination.policy.PolicyEngine
 import com.ankit.destination.security.AppLockManager
+import com.ankit.destination.ui.UiInvalidationBus
 import com.ankit.destination.ui.components.AdminSessionBanner
 import com.ankit.destination.ui.components.AdminSessionDialog
 import com.ankit.destination.ui.components.collectAsStateWithLifecycleCompat
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-fun DeviceControlsScreen() {
+fun DeviceControlsScreen(
+    policyEngine: PolicyEngine,
+    appLockManager: AppLockManager
+) {
     val context = LocalContext.current
-    val policyEngine = remember(context) { PolicyEngine(context.applicationContext) }
-    val appLockManager = remember(context) { AppLockManager(context) }
     val viewModel: DeviceControlsViewModel = viewModel(
         factory = DeviceControlsViewModelFactory(
             context.applicationContext,
@@ -63,9 +65,10 @@ fun DeviceControlsScreen() {
         )
     )
     val uiState by viewModel.uiState.collectAsStateWithLifecycleCompat()
+    val invalidation by UiInvalidationBus.latest.collectAsStateWithLifecycleCompat()
 
-    LaunchedEffect(Unit) {
-        viewModel.refresh()
+    LaunchedEffect(viewModel, invalidation.version) {
+        viewModel.onInvalidation(invalidation.version)
     }
 
     if (uiState.showAuthDialog) {

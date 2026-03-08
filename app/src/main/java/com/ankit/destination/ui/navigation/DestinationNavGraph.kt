@@ -6,6 +6,8 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.toRoute
+import com.ankit.destination.policy.PolicyEngine
+import com.ankit.destination.security.AppLockManager
 import com.ankit.destination.ui.apprules.AppRulesScreen
 import com.ankit.destination.ui.apps.AppDetailScreen
 import com.ankit.destination.ui.apps.IndividualAppsScreen
@@ -28,6 +30,8 @@ import kotlinx.serialization.Serializable
 @Composable
 fun DestinationNavGraph(
     navController: NavHostController,
+    policyEngine: PolicyEngine,
+    appLockManager: AppLockManager,
     modifier: Modifier = Modifier
 ) {
     NavHost(
@@ -37,13 +41,21 @@ fun DestinationNavGraph(
     ) {
 
         composable<DeviceControlsRoute> {
-            DeviceControlsScreen()
+            DeviceControlsScreen(
+                policyEngine = policyEngine,
+                appLockManager = appLockManager
+            )
         }
         composable<AppRulesRoute> {
-            AppRulesScreen()
+            AppRulesScreen(
+                policyEngine = policyEngine,
+                appLockManager = appLockManager
+            )
         }
         composable<GroupListRoute> {
             GroupListScreen(
+                policyEngine = policyEngine,
+                appLockManager = appLockManager,
                 onNavigateToGroupDetail = { groupId ->
                     navController.navigate(GroupDetailRoute(groupId))
                 }
@@ -53,11 +65,15 @@ fun DestinationNavGraph(
             val route: GroupDetailRoute = backStackEntry.toRoute()
             GroupDetailScreen(
                 groupId = route.groupId,
+                policyEngine = policyEngine,
+                appLockManager = appLockManager,
                 onBack = { navController.popBackStack() }
             )
         }
         composable<IndividualAppsRoute> {
             IndividualAppsScreen(
+                policyEngine = policyEngine,
+                appLockManager = appLockManager,
                 onNavigateToAppDetail = { pkg ->
                     navController.navigate(AppDetailRoute(pkg))
                 }
@@ -67,15 +83,23 @@ fun DestinationNavGraph(
             val route: AppDetailRoute = backStackEntry.toRoute()
             AppDetailScreen(
                 packageName = route.packageName,
+                policyEngine = policyEngine,
+                appLockManager = appLockManager,
                 onBack = { navController.popBackStack() }
             )
         }
         composable<DangerZoneRoute> {
-            DangerZoneScreen()
+            DangerZoneScreen(
+                policyEngine = policyEngine,
+                appLockManager = appLockManager
+            )
         }
 
         composable<DiagnosticsRoute> {
-            DiagnosticsScreen()
+            DiagnosticsScreen(
+                policyEngine = policyEngine,
+                appLockManager = appLockManager
+            )
         }
     }
 }

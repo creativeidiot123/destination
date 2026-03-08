@@ -40,8 +40,8 @@ import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,6 +53,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.ui.platform.LocalContext
 import com.ankit.destination.policy.PolicyEngine
 import com.ankit.destination.security.AppLockManager
+import com.ankit.destination.ui.UiInvalidationBus
 import com.ankit.destination.ui.components.AdminSessionBanner
 import com.ankit.destination.ui.components.AnimatedNumberCounter
 import com.ankit.destination.ui.components.bouncyClickable
@@ -60,10 +61,11 @@ import com.ankit.destination.ui.components.collectAsStateWithLifecycleCompat
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-fun DashboardScreen() {
+fun DashboardScreen(
+    policyEngine: PolicyEngine,
+    appLockManager: AppLockManager
+) {
     val context = LocalContext.current
-    val policyEngine = remember(context) { PolicyEngine(context.applicationContext) }
-    val appLockManager = remember(context) { AppLockManager(context) }
     val viewModel: DashboardViewModel = viewModel(
         factory = DashboardViewModelFactory(
             context.applicationContext,
@@ -72,9 +74,10 @@ fun DashboardScreen() {
         )
     )
     val uiState by viewModel.uiState.collectAsStateWithLifecycleCompat()
+    val invalidation by UiInvalidationBus.latest.collectAsStateWithLifecycleCompat()
 
-    LaunchedEffect(Unit) {
-        viewModel.refresh()
+    LaunchedEffect(viewModel, invalidation.version) {
+        viewModel.onInvalidation(invalidation.version)
     }
 
     Column(modifier = Modifier.fillMaxSize()) {

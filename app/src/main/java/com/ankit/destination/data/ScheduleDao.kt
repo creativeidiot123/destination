@@ -21,6 +21,16 @@ interface ScheduleDao {
     @Query("SELECT * FROM schedule_block_groups")
     suspend fun getAllBlockGroups(): List<ScheduleBlockGroup>
 
+    @Query(
+        """
+        SELECT sbg.* FROM schedule_block_groups sbg
+        INNER JOIN schedule_blocks sb ON sb.`id` = sbg.`blockId`
+        WHERE sb.enabled = 1
+        ORDER BY sbg.`blockId` ASC, sbg.`groupId` ASC
+        """
+    )
+    suspend fun getEnabledBlockGroups(): List<ScheduleBlockGroup>
+
     @Query("SELECT groupId FROM schedule_block_groups WHERE blockId = :blockId ORDER BY groupId ASC")
     suspend fun getGroupsForBlock(blockId: Long): List<String>
 
@@ -95,6 +105,19 @@ interface ScheduleDao {
         deleteAllBlocks()
     }
 
+    @Transaction
+    suspend fun getEnabledScheduleSnapshot(): EnabledScheduleSnapshot {
+        return EnabledScheduleSnapshot(
+            blocks = getEnabledBlocks(),
+            blockGroups = getEnabledBlockGroups()
+        )
+    }
+
     @Delete
     suspend fun delete(block: ScheduleBlock)
 }
+
+data class EnabledScheduleSnapshot(
+    val blocks: List<ScheduleBlock>,
+    val blockGroups: List<ScheduleBlockGroup>
+)

@@ -9,7 +9,9 @@ import com.ankit.destination.policy.EffectiveBlockReason
 import com.ankit.destination.policy.PolicyEngine
 import com.ankit.destination.security.AppLockManager
 import com.ankit.destination.ui.RefreshCoordinator
+import com.ankit.destination.ui.UiInvalidationBus
 import com.ankit.destination.ui.loadInstalledAppOptions
+import com.ankit.destination.ui.runCatchingNonCancellation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -46,6 +48,12 @@ class IndividualAppsViewModel(
     private val refreshCoordinator = RefreshCoordinator()
     private val _uiState = MutableStateFlow(IndividualAppsUiState())
     val uiState: StateFlow<IndividualAppsUiState> = _uiState.asStateFlow()
+    private var hasLoadedOnce = false
+    private var lastHandledInvalidationVersion = UiInvalidationBus.latest.value.version
+
+    init {
+        refresh(force = true)
+    }
 
     fun refresh(force: Boolean = false) {
         if (!refreshCoordinator.tryStart(force)) return
@@ -55,61 +63,86 @@ class IndividualAppsViewModel(
             do {
                 var loadSucceeded = false
                 try {
-                    _uiState.update { it.copy(isLoading = true) }
+                    if (!hasLoadedOnce) {
+                        _uiState.update { it.copy(isLoading = true) }
+                    }
                     val refreshed = withContext(Dispatchers.IO) {
-                        val adminActive = appLockManager.isAdminSessionActive()
-                        val remainingMs = appLockManager.getSessionRemainingMs()
-                        val snapshot = policyEngine.diagnosticsSnapshot()
-                        val appPolicies = db.budgetDao().getAllAppPolicies().associateBy { it.packageName }
-                        val usageInputs = budgetOrchestrator.readUsageSnapshot().usageInputs
-                        val launchableApps = loadInstalledAppOptions(
-                            context = appContext,
-                            includePackageNames = appPolicies.keys
-                        )
-                        IndividualAppsUiState(
-                            apps = launchableApps
-                                .map { option ->
-                                    val policy = appPolicies[option.packageName]
-                                    val usedToday = usageInputs.usedTodayMs[option.packageName] ?: 0L
-                                    val opensToday = usageInputs.opensToday[option.packageName] ?: 0
-                                    val rawReason = snapshot.primaryReasonByPackage[option.packageName]
-                                    val customRules = policy != null && (
-                                        policy.dailyLimitMs > 0L ||
-                                            policy.hourlyLimitMs > 0L ||
-                                            policy.opensPerDay > 0 ||
-                                            policy.emergencyEnabled
+                        runCatchingNonCancellation {
+                            val adminActive = appLockManager.isAdminSessionActive()
+                            val remainingMs = appLockManager.getSessionRemainingMs()
+                            val policySnapshot = policyEngine.uiSnapshot()
+                            val protectionSnapshot = policyEngine.getAppProtectionSnapshotAsync()
+                            val appPolicies = db.budgetDao().getAllAppPolicies().associateBy { it.packageName }
+                            val usageInputs = budgetOrchestrator.readUsageSnapshot().usageInputs
+                            val launchableApps = loadInstalledAppOptions(
+                                context = appContext,
+                                includePackageNames = appPolicies.keys,
+                                protectionSnapshot = protectionSnapshot
+                            )
+                            IndividualAppsUiState(
+                                apps = launchableApps
+                                    .map { option ->
+                                        val policy = appPolicies[option.packageName]
+                                        val usedToday = usageInputs.usedTodayMs[option.packageName] ?: 0L
+                                        val opensToday = usageInputs.opensToday[option.packageName] ?: 0
+                                        val rawReason = policySnapshot.primaryReasonByPackage[option.packageName]
+                                        val customRules = policy != null && (
+                                            policy.dailyLimitMs > 0L ||
+                                                policy.hourlyLimitMs > 0L ||
+                                                policy.opensPerDay > 0 ||
+                                                policy.emergencyEnabled
+                                            )
+                                        AppUsageItem(
+                                            packageName = option.packageName,
+                                            label = option.label,
+                                            usageTimeMs = usedToday,
+                                            blockMessage = blockMessageFor(
+                                                rawReason = rawReason,
+                                                blocked = rawReason != null ||
+                                                    policySnapshot.budgetBlockedPackages.contains(option.packageName),
+                                                budgetBlocked = policySnapshot.budgetBlockedPackages.contains(option.packageName)
+                                            ),
+                                            hasCustomRules = customRules,
+                                            opensToday = opensToday
                                         )
-                                    AppUsageItem(
-                                        packageName = option.packageName,
-                                        label = option.label,
-                                        usageTimeMs = usedToday,
-                                        blockMessage = blockMessageFor(
-                                            rawReason = rawReason,
-                                            blocked = rawReason != null || snapshot.budgetBlockedPackages.contains(option.packageName)
-                                        ),
-                                        hasCustomRules = customRules,
-                                        opensToday = opensToday
-                                    )
-                                }
-                                .sortedWith(
-                                    compareByDescending<AppUsageItem> { it.hasCustomRules }
-                                        .thenByDescending { it.blockMessage != null }
-                                        .thenByDescending { it.usageTimeMs }
-                                        .thenBy { it.label.lowercase() }
-                                ),
-                            isLoading = false,
-                            adminSessionActive = adminActive,
-                            adminSessionRemainingMs = remainingMs
-                        )
+                                    }
+                                    .sortedWith(
+                                        compareByDescending<AppUsageItem> { it.hasCustomRules }
+                                            .thenByDescending { it.blockMessage != null }
+                                            .thenByDescending { it.usageTimeMs }
+                                            .thenBy { it.label.lowercase() }
+                                    ),
+                                isLoading = false,
+                                adminSessionActive = adminActive,
+                                adminSessionRemainingMs = remainingMs
+                            )
+                        }
                     }
 
-                    _uiState.value = refreshed
-                    loadSucceeded = true
+                    refreshed.onSuccess { state ->
+                        _uiState.value = state
+                        hasLoadedOnce = true
+                        loadSucceeded = true
+                    }.onFailure {
+                        _uiState.update {
+                            it.copy(
+                                isLoading = false,
+                                adminSessionActive = appLockManager.isAdminSessionActive(),
+                                adminSessionRemainingMs = appLockManager.getSessionRemainingMs()
+                            )
+                        }
+                    }
                 } finally {
                     shouldRerun = refreshCoordinator.finish(loadSucceeded)
                 }
             } while (shouldRerun)
         }
+    }
+
+    fun onInvalidation(version: Long) {
+        if (version <= 0L || version <= lastHandledInvalidationVersion) return
+        lastHandledInvalidationVersion = version
+        refresh(force = true)
     }
 
     fun attemptEditApp(packageName: String, navigate: (String) -> Unit) {
@@ -134,7 +167,7 @@ class IndividualAppsViewModel(
     }
 }
 
-private fun blockMessageFor(rawReason: String?, blocked: Boolean): String? {
+private fun blockMessageFor(rawReason: String?, blocked: Boolean, budgetBlocked: Boolean): String? {
     if (!blocked) return null
 
     val normalized = rawReason
@@ -147,10 +180,15 @@ private fun blockMessageFor(rawReason: String?, blocked: Boolean): String? {
         normalized == EffectiveBlockReason.STRICT_INSTALL.name -> "Blocked during strict schedule"
         normalized == EffectiveBlockReason.USAGE_ACCESS_RECOVERY_LOCKDOWN.name ->
             "Blocked - Usage Access recovery required"
+        normalized.isBlank() && budgetBlocked -> "Usage limit reached"
         normalized == "SCHEDULE_GROUP" ||
             normalized.contains("SCHEDULED_BLOCK") ||
             normalized.endsWith("_SCHEDULED_BLOCK") -> {
-            "Scheduled block active"
+            if (budgetBlocked) {
+                "Scheduled block active. Usage limit remains after the schedule ends."
+            } else {
+                "Scheduled block active"
+            }
         }
         normalized == "BUDGET" ||
             normalized.contains("USAGE_BLOCK") ||

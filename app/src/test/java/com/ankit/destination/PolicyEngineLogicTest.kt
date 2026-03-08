@@ -177,6 +177,30 @@ class PolicyEngineLogicTest {
     }
 
     @Test
+    fun recoverTrackedSuspendedPackages_mergesDetectedSuspensionsIntoTrackedSet() {
+        val recovered = PolicyEngine.recoverTrackedSuspendedPackages(
+            trackedPackages = setOf("tracked.app"),
+            candidatePackages = setOf("tracked.app", "stuck.app", "clear.app"),
+            canVerifyPackageSuspension = true
+        ) { packageName ->
+            packageName == "tracked.app" || packageName == "stuck.app"
+        }
+
+        assertEquals(setOf("tracked.app", "stuck.app"), recovered)
+    }
+
+    @Test
+    fun recoverTrackedSuspendedPackages_skipsRecoveryWhenVerificationUnavailable() {
+        val recovered = PolicyEngine.recoverTrackedSuspendedPackages(
+            trackedPackages = setOf("tracked.app"),
+            candidatePackages = setOf("stuck.app"),
+            canVerifyPackageSuspension = false
+        ) { true }
+
+        assertEquals(setOf("tracked.app"), recovered)
+    }
+
+    @Test
     fun pickNextAlarmAtMs_ignores_stale_candidates() {
         val next = PolicyEngine.pickNextAlarmAtMs(
             nowMs = 10_000L,
@@ -282,6 +306,106 @@ class PolicyEngineLogicTest {
         assertFalse(state.active)
         assertFalse(state.strictActive)
         assertEquals("Group schedule active: Strict social", state.reason)
+    }
+
+    @Test
+    fun resolveActiveScheduleTargets_filtersOrphanGroupsAndUninstalledApps() {
+        val targets = PolicyEngine.resolveActiveScheduleTargets(
+            activeBlockIds = setOf(5L, 7L),
+            scheduleBlocks = listOf(
+                ScheduleBlock(
+                    id = 5L,
+                    name = "Strict social",
+                    daysMask = 1,
+                    startMinute = 600,
+                    endMinute = 660,
+                    kind = ScheduleBlockKind.GROUPS.name,
+                    strict = true
+                ),
+                ScheduleBlock(
+                    id = 7L,
+                    name = "Solo app",
+                    daysMask = 1,
+                    startMinute = 600,
+                    endMinute = 660,
+                    kind = ScheduleBlockKind.GROUPS.name,
+                    strict = true
+                )
+            ),
+            scheduleGroupTargetsByBlock = mapOf(
+                5L to setOf("orphan", "study")
+            ),
+            scheduleAppTargetsByBlock = mapOf(
+                7L to setOf("missing.app", "installed.app")
+            ),
+            validGroupIds = setOf("study"),
+            isPackageInstalled = { packageName -> packageName == "installed.app" }
+        )
+
+        assertEquals(setOf(5L, 7L), targets.targetedActiveBlockIds)
+        assertEquals(setOf("study"), targets.scheduledGroupIds)
+        assertEquals(setOf("installed.app"), targets.scheduledAppPackages)
+        assertNull(targets.warning)
+    }
+
+    @Test
+    fun resolveActiveScheduleTargets_warnsWhenWindowHasZeroEffectiveTargets() {
+        val targets = PolicyEngine.resolveActiveScheduleTargets(
+            activeBlockIds = setOf(5L),
+            scheduleBlocks = listOf(
+                ScheduleBlock(
+                    id = 5L,
+                    name = "Strict social",
+                    daysMask = 1,
+                    startMinute = 600,
+                    endMinute = 660,
+                    kind = ScheduleBlockKind.GROUPS.name,
+                    strict = true
+                )
+            ),
+            scheduleGroupTargetsByBlock = mapOf(5L to setOf("orphan")),
+            scheduleAppTargetsByBlock = mapOf(5L to setOf("missing.app")),
+            validGroupIds = emptySet(),
+            isPackageInstalled = { false }
+        )
+
+        assertTrue(targets.targetedActiveBlockIds.isEmpty())
+        assertTrue(targets.scheduledGroupIds.isEmpty())
+        assertTrue(targets.scheduledAppPackages.isEmpty())
+        assertEquals(
+            "Schedule window active but no effective installed or valid targets: Strict social",
+            targets.warning
+        )
+    }
+
+    @Test
+    fun resolveActiveScheduleTargets_warnsWhenActiveBlocksHaveNoConfiguredTargets() {
+        val targets = PolicyEngine.resolveActiveScheduleTargets(
+            activeBlockIds = setOf(5L),
+            scheduleBlocks = listOf(
+                ScheduleBlock(
+                    id = 5L,
+                    name = "Strict social",
+                    daysMask = 1,
+                    startMinute = 600,
+                    endMinute = 660,
+                    kind = ScheduleBlockKind.GROUPS.name,
+                    strict = true
+                )
+            ),
+            scheduleGroupTargetsByBlock = emptyMap(),
+            scheduleAppTargetsByBlock = emptyMap(),
+            validGroupIds = emptySet(),
+            isPackageInstalled = { false }
+        )
+
+        assertTrue(targets.targetedActiveBlockIds.isEmpty())
+        assertTrue(targets.scheduledGroupIds.isEmpty())
+        assertTrue(targets.scheduledAppPackages.isEmpty())
+        assertEquals(
+            "Schedule window active but no targets are configured: Strict social",
+            targets.warning
+        )
     }
 
     @Test

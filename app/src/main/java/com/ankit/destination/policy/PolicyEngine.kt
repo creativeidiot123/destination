@@ -82,6 +82,12 @@ class PolicyEngine private constructor(
 
     fun isBudgetUsageAccessGranted(): Boolean = store.isBudgetUsageAccessGranted()
 
+    fun isHiddenSuspendPrototypeEnabled(): Boolean = store.isHiddenSuspendPrototypeEnabled()
+
+    fun setHiddenSuspendPrototypeEnabled(enabled: Boolean) {
+        store.setHiddenSuspendPrototypeEnabled(enabled)
+    }
+
     fun getBudgetNextCheckAtMs(): Long? = store.getBudgetNextCheckAtMs()
 
     fun getStrictInstallSuspendedPackages(): Set<String> = store.getStrictInstallSuspendedPackages()
@@ -153,6 +159,10 @@ class PolicyEngine private constructor(
             is ManagedNetworkPolicy.ForcedVpn -> policy.packageName
             else -> null
         }
+    }
+
+    fun invalidatePolicyControlsForDiagnosticsImport() {
+        invalidatePolicyControlsCache()
     }
 
     fun setGlobalControls(controls: GlobalControls) {
@@ -429,7 +439,6 @@ class PolicyEngine private constructor(
                 )
             )
             val outcome = runCatching {
-                store.resetForFreshStart()
                 AppLockManager(appContext).clearAll()
                 invalidatePolicyControlsCache()
                 VpnStatusStore(appContext).clear()
@@ -461,6 +470,7 @@ class PolicyEngine private constructor(
                     }.joinToString(" | ")
                 }
 
+                store.resetForFreshStart()
                 store.recordApply(
                     state = cleanState,
                     applyResult = applyResult,
@@ -561,6 +571,16 @@ class PolicyEngine private constructor(
         val trackedPackages = sanitizeTrackedPackages()
         val nowMs = clock.nowMs()
         val external = computeExternalState(nowMs)
+        val liveScheduleTargetWarning = runCatching {
+            computeLiveScheduleTargetWarning(clock.now())
+        }.onFailure { throwable ->
+            FocusLog.e(
+                appContext,
+                FocusEventId.POLICY_STATE_COMPUTED,
+                "Failed to compute live schedule target warning",
+                throwable
+            )
+        }.getOrNull()
         val expected = evaluator.evaluate(
             mode = desiredMode,
             emergencyApps = getEmergencyApps(),
@@ -610,6 +630,7 @@ class PolicyEngine private constructor(
             scheduleBlockedGroups = store.getScheduleBlockedGroups(),
             scheduleBlockedPackages = scheduleBlockedPackages,
             scheduleLockReason = scheduleReason,
+            scheduleTargetWarning = liveScheduleTargetWarning,
             scheduleNextTransitionAtMs = store.getScheduleNextTransitionAtMs(),
             budgetBlockedPackages = store.getBudgetBlockedPackages(),
             budgetBlockedGroupIds = store.getBudgetBlockedGroupIds(),
@@ -631,6 +652,9 @@ class PolicyEngine private constructor(
             lastAppliedAtMs = store.getLastAppliedAtMs(),
             lastVerificationPassed = store.getLastVerifyPassed(),
             lastError = store.getLastError(),
+            hiddenSuspendPrototypeEnabled = store.isHiddenSuspendPrototypeEnabled(),
+            packageSuspendBackend = store.getLastPackageSuspendBackend(),
+            packageSuspendPrototypeError = store.getLastPackageSuspendPrototypeError(),
             lastSuspendedPackages = store.getLastSuspendedPackages(),
             restrictions = restrictions,
             vpnActive = isVpnActive(),
@@ -660,6 +684,59 @@ class PolicyEngine private constructor(
                 scheduleBlockedPackages = scheduleBlockedPackages,
                 protectionSnapshot = external.protectionSnapshot
             )
+        )
+    }
+
+    fun dashboardSnapshot(nowMs: Long = clock.nowMs()): DashboardSnapshot {
+        val usageAccessState = UsageAccessMonitor.currentState.value.let { state ->
+            if (state.lastCheckAtMs > 0L) {
+                state
+            } else {
+                UsageAccessMonitor.refreshNow(
+                    context = appContext,
+                    reason = "dashboard_snapshot",
+                    requestPolicyRefreshIfChanged = false
+                )
+            }
+        }
+        val compliance = currentUsageAccessComplianceState(usageAccessState.usageAccessGranted)
+        val accessibilityState = AccessibilityStatusMonitor.currentState.value.let { state ->
+            if (state.lastCheckAtMs > 0L) {
+                state
+            } else {
+                AccessibilityStatusMonitor.refreshNow(appContext, "dashboard_snapshot")
+            }
+        }
+        val scheduleBlockedGroupsCount = store.getScheduleBlockedGroups().size
+        return DashboardSnapshot(
+            deviceOwner = isDeviceOwner(),
+            usageAccessGranted = compliance.usageAccessGranted,
+            accessibilityServiceEnabled = accessibilityState.enabled,
+            accessibilityServiceRunning = AccessibilityStatusMonitor.serviceRunning(accessibilityState, nowMs),
+            accessibilityDegradedReason = AccessibilityStatusMonitor.degradedReason(accessibilityState, nowMs),
+            usageAccessRecoveryLockdownActive = compliance.lockdownActive,
+            usageAccessRecoveryReason = compliance.reason,
+            scheduleBlockedGroupsCount = scheduleBlockedGroupsCount,
+            scheduleStrictActive = store.isScheduleStrictEnforced(),
+            totalBlockedApps = (store.getBudgetBlockedPackages() + store.getLastSuspendedPackages()).size,
+            lastAppliedAtMs = store.getLastAppliedAtMs(),
+            lastError = store.getLastError(),
+            nextPolicyWakeAtMs = store.getNextPolicyWakeAtMs(),
+            nextPolicyWakeReason = store.getNextPolicyWakeReason(),
+            vpnActive = isVpnActive()
+        )
+    }
+
+    fun uiSnapshot(): PolicyUiSnapshot {
+        return PolicyUiSnapshot(
+            scheduleBlockedGroups = store.getScheduleBlockedGroups(),
+            budgetBlockedPackages = store.getBudgetBlockedPackages(),
+            budgetBlockedGroupIds = store.getBudgetBlockedGroupIds(),
+            lastSuspendedPackages = store.getLastSuspendedPackages(),
+            primaryReasonByPackage = store.getPrimaryReasonByPackage(),
+            scheduleLockReason = store.getScheduleLockReason(),
+            budgetReason = store.getBudgetReason(),
+            currentLockReason = store.getCurrentLockReason()
         )
     }
 
@@ -866,12 +943,28 @@ class PolicyEngine private constructor(
 
     private fun sanitizeTrackedPackages(): TrackedPackages {
         val installedCheck = resolver::isPackageInstalled
+        val retainedSuspended = retainInstalledTrackedPackages(
+            trackedPackages = store.getLastSuspendedPackages(),
+            controllerPackageName = appContext.packageName,
+            isInstalled = installedCheck
+        )
+        val recoveredSuspended = recoverTrackedSuspendedPackages(
+            trackedPackages = retainedSuspended,
+            candidatePackages = resolver.getInstalledTargetablePackages(),
+            canVerifyPackageSuspension = facade.canVerifyPackageSuspension(),
+            isPackageSuspended = facade::isPackageSuspended
+        )
+        val newlyRecoveredSuspended = recoveredSuspended - retainedSuspended
+        if (newlyRecoveredSuspended.isNotEmpty()) {
+            store.addLastSuspendedPackages(newlyRecoveredSuspended)
+            FocusLog.w(
+                appContext,
+                FocusEventId.SUSPEND_TARGET,
+                "Recovered ${newlyRecoveredSuspended.size} suspended packages missing from policy tracking"
+            )
+        }
         return TrackedPackages(
-            previouslySuspended = retainInstalledTrackedPackages(
-                trackedPackages = store.getLastSuspendedPackages(),
-                controllerPackageName = appContext.packageName,
-                isInstalled = installedCheck
-            ),
+            previouslySuspended = recoveredSuspended,
             previouslyUninstallProtected = retainInstalledTrackedPackages(
                 trackedPackages = store.getLastUninstallProtectedPackages(),
                 controllerPackageName = appContext.packageName,
@@ -958,14 +1051,14 @@ class PolicyEngine private constructor(
             withContext(Dispatchers.IO) {
                 val budgetDao = db.budgetDao()
                 val scheduleDao = db.scheduleDao()
-                val blocks = scheduleDao.getEnabledBlocks()
-                val scheduleTargets = splitScheduleTargetsByBlock(scheduleDao.getAllBlockGroups())
+                val scheduleSnapshot = scheduleDao.getEnabledScheduleSnapshot()
+                val scheduleTargets = splitScheduleTargetsByBlock(scheduleSnapshot.blockGroups)
                 LoadedPolicyRows(
                     groupLimits = budgetDao.getEnabledGroupLimits(),
                     groupEmergencyConfigs = budgetDao.getAllGroupEmergencyConfigs().associateBy { it.groupId },
                     appPolicies = budgetDao.getEnabledAppPolicies(),
                     mappings = budgetDao.getAllMappings(),
-                    scheduleBlocks = blocks,
+                    scheduleBlocks = scheduleSnapshot.blocks,
                     scheduleBlockTargets = scheduleTargets.allTargetsByBlockId,
                     scheduleGroupTargetsByBlock = scheduleTargets.groupTargetsByBlockId,
                     scheduleAppTargetsByBlock = scheduleTargets.appTargetsByBlockId,
@@ -975,16 +1068,14 @@ class PolicyEngine private constructor(
         }
         val scheduleDecision = ScheduleEvaluator.evaluate(now, loaded.scheduleBlocks, loaded.scheduleBlockTargets)
         val activeBlockIds = scheduleDecision.activeBlockIds
-        val targetedActiveBlockIds = activeBlockIds.filterTo(linkedSetOf()) { blockId ->
-            loaded.scheduleGroupTargetsByBlock[blockId].orEmpty().isNotEmpty() ||
-                loaded.scheduleAppTargetsByBlock[blockId].orEmpty().isNotEmpty()
-        }
-        val scheduledGroupIds = activeBlockIds.flatMapTo(linkedSetOf()) { blockId ->
-            loaded.scheduleGroupTargetsByBlock[blockId].orEmpty()
-        }
-        val scheduledAppPackages = activeBlockIds.flatMapTo(linkedSetOf()) { blockId ->
-            loaded.scheduleAppTargetsByBlock[blockId].orEmpty()
-        }
+        val activeScheduleTargets = resolveActiveScheduleTargets(
+            activeBlockIds = activeBlockIds,
+            scheduleBlocks = loaded.scheduleBlocks,
+            scheduleGroupTargetsByBlock = loaded.scheduleGroupTargetsByBlock,
+            scheduleAppTargetsByBlock = loaded.scheduleAppTargetsByBlock,
+            validGroupIds = loaded.groupLimits.mapTo(linkedSetOf(), GroupLimit::groupId),
+            isPackageInstalled = resolver::isPackageInstalled
+        )
         val usageSnapshot = runBlocking { budgetClient.readUsageSnapshot(now) }
         val groupMembers = loaded.mappings.groupBy(AppGroupMap::groupId) { it.packageName }
         val groupInputs = loaded.groupLimits.map { limit ->
@@ -998,15 +1089,15 @@ class PolicyEngine private constructor(
                 opensPerDay = limit.opensPerDay,
                 members = groupMembers[limit.groupId].orEmpty().toSet(),
                 emergencyConfig = loaded.groupEmergencyConfigs[limit.groupId].toEmergencyConfig(),
-                scheduleBlocked = scheduledGroupIds.contains(limit.groupId)
+                scheduleBlocked = activeScheduleTargets.scheduledGroupIds.contains(limit.groupId)
             )
         }
         val baseScheduleState = resolveLiveScheduleState(
             scheduleDecision = scheduleDecision,
             scheduleBlocks = loaded.scheduleBlocks,
-            targetedActiveBlockIds = targetedActiveBlockIds,
-            scheduledGroupIds = scheduledGroupIds,
-            scheduledAppPackages = scheduledAppPackages
+            targetedActiveBlockIds = activeScheduleTargets.targetedActiveBlockIds,
+            scheduledGroupIds = activeScheduleTargets.scheduledGroupIds,
+            scheduledAppPackages = activeScheduleTargets.scheduledAppPackages
         )
         val strictActive = resolveStrictScheduleActive(
             scheduleStrictActive = baseScheduleState.strictActive,
@@ -1034,7 +1125,7 @@ class PolicyEngine private constructor(
                     unlocksPerDay = policy.unlocksPerDay,
                     minutesPerUnlock = policy.minutesPerUnlock
                 ),
-                scheduleBlocked = scheduledAppPackages.contains(policy.packageName)
+                scheduleBlocked = activeScheduleTargets.scheduledAppPackages.contains(policy.packageName)
             )
         }
         val nowMs = now.toInstant().toEpochMilli()
@@ -1095,15 +1186,40 @@ class PolicyEngine private constructor(
             nextPolicyWakeAtMs = nextPolicyWake.atMs,
             nextPolicyWakeReason = nextPolicyWake.reason,
             scheduleDecision = scheduleDecision,
-            scheduledGroupIds = scheduledGroupIds,
-            scheduledAppPackages = scheduledAppPackages,
+            scheduledGroupIds = activeScheduleTargets.scheduledGroupIds,
+            scheduledAppPackages = activeScheduleTargets.scheduledAppPackages,
             scheduleState = scheduleState,
+            scheduleTargetWarning = activeScheduleTargets.warning,
             policyControls = policyControls,
             protectionSnapshot = protectionSnapshot,
             installedTargetablePackages = installedTargetablePackages,
             hardProtectedPackages = hardProtectedPackages,
             evaluation = evaluation
         )
+    }
+
+    private fun computeLiveScheduleTargetWarning(now: ZonedDateTime): String? {
+        return runBlocking {
+            withContext(Dispatchers.IO) {
+                val budgetDao = db.budgetDao()
+                val scheduleDao = db.scheduleDao()
+                val scheduleSnapshot = scheduleDao.getEnabledScheduleSnapshot()
+                val scheduleTargets = splitScheduleTargetsByBlock(scheduleSnapshot.blockGroups)
+                val scheduleDecision = ScheduleEvaluator.evaluate(
+                    now = now,
+                    blocks = scheduleSnapshot.blocks,
+                    blockGroups = scheduleTargets.allTargetsByBlockId
+                )
+                resolveActiveScheduleTargets(
+                    activeBlockIds = scheduleDecision.activeBlockIds,
+                    scheduleBlocks = scheduleSnapshot.blocks,
+                    scheduleGroupTargetsByBlock = scheduleTargets.groupTargetsByBlockId,
+                    scheduleAppTargetsByBlock = scheduleTargets.appTargetsByBlockId,
+                    validGroupIds = budgetDao.getEnabledGroupLimits().mapTo(linkedSetOf(), GroupLimit::groupId),
+                    isPackageInstalled = resolver::isPackageInstalled
+                ).warning
+            }
+        }
     }
 
     private fun persistComputedState(orchestrated: OrchestratedState) {
@@ -1141,6 +1257,13 @@ class PolicyEngine private constructor(
                 appContext,
                 FocusEventId.POLICY_STATE_COMPUTED,
                 "Usage Access recovery lockdown active without resolved Settings or launcher packages"
+            )
+        }
+        orchestrated.scheduleTargetWarning?.let { warning ->
+            FocusLog.w(
+                appContext,
+                FocusEventId.POLICY_STATE_COMPUTED,
+                warning
             )
         }
         FocusLog.i(
@@ -1525,6 +1648,13 @@ class PolicyEngine private constructor(
         val appTargetsByBlockId: Map<Long, Set<String>>
     )
 
+    internal data class ActiveScheduleTargets(
+        val targetedActiveBlockIds: Set<Long>,
+        val scheduledGroupIds: Set<String>,
+        val scheduledAppPackages: Set<String>,
+        val warning: String?
+    )
+
     private data class OrchestratedState(
         val nowMs: Long,
         val usageAccessGranted: Boolean,
@@ -1536,6 +1666,7 @@ class PolicyEngine private constructor(
         val scheduledGroupIds: Set<String>,
         val scheduledAppPackages: Set<String>,
         val scheduleState: LiveScheduleState,
+        val scheduleTargetWarning: String?,
         val policyControls: PolicyControls,
         val protectionSnapshot: AppProtectionSnapshot,
         val installedTargetablePackages: Set<String>,
@@ -1602,11 +1733,15 @@ class PolicyEngine private constructor(
     }
 
     private suspend fun ensureDefaultHiddenAppsSeededLocked(dao: com.ankit.destination.data.BudgetDao) {
-        DefaultHiddenAppResolver(appContext)
-            .resolveLockedHiddenPackages()
-            .forEach { packageName ->
-                dao.upsertHiddenApp(HiddenApp(packageName = packageName, locked = true))
-            }
+        val resolver = DefaultHiddenAppResolver(appContext)
+        val lockedDefaults = resolver.resolveLockedHiddenPackages()
+        dao.getHiddenApps()
+            .asSequence()
+            .filter { it.locked && it.packageName !in lockedDefaults }
+            .forEach { dao.deleteHiddenApp(it.packageName) }
+        lockedDefaults.forEach { packageName ->
+            dao.upsertHiddenApp(HiddenApp(packageName = packageName, locked = true))
+        }
     }
 
     private fun buildAppProtectionSnapshot(
@@ -1682,6 +1817,40 @@ class PolicyEngine private constructor(
         ): Set<String> {
             return trackedPackages.filterTo(linkedSetOf()) { packageName ->
                 packageName == controllerPackageName || isInstalled(packageName)
+            }
+        }
+
+        internal fun recoverTrackedSuspendedPackages(
+            trackedPackages: Set<String>,
+            candidatePackages: Set<String>,
+            canVerifyPackageSuspension: Boolean,
+            isPackageSuspended: (String) -> Boolean?
+        ): Set<String> {
+            val normalizedTracked = trackedPackages
+                .asSequence()
+                .map(String::trim)
+                .filter(String::isNotBlank)
+                .toCollection(linkedSetOf())
+            if (!canVerifyPackageSuspension) {
+                return normalizedTracked
+            }
+            val candidates = linkedSetOf<String>().apply {
+                addAll(normalizedTracked)
+                candidatePackages
+                    .asSequence()
+                    .map(String::trim)
+                    .filter(String::isNotBlank)
+                    .forEach(::add)
+            }
+            if (candidates.isEmpty()) {
+                return normalizedTracked
+            }
+            val detectedSuspended = candidates.filterTo(linkedSetOf()) { packageName ->
+                isPackageSuspended(packageName) == true
+            }
+            return linkedSetOf<String>().apply {
+                addAll(normalizedTracked)
+                addAll(detectedSuspended)
             }
         }
 
@@ -1766,6 +1935,63 @@ class PolicyEngine private constructor(
             if (!scheduleStrictComputed) return true
             val nextTransitionAt = scheduleNextTransitionAtMs ?: return true
             return nowMs >= nextTransitionAt
+        }
+
+        internal fun resolveActiveScheduleTargets(
+            activeBlockIds: Set<Long>,
+            scheduleBlocks: List<com.ankit.destination.data.ScheduleBlock>,
+            scheduleGroupTargetsByBlock: Map<Long, Set<String>>,
+            scheduleAppTargetsByBlock: Map<Long, Set<String>>,
+            validGroupIds: Set<String>,
+            isPackageInstalled: (String) -> Boolean
+        ): ActiveScheduleTargets {
+            val installCache = linkedMapOf<String, Boolean>()
+            fun isInstalledCached(packageName: String): Boolean {
+                return installCache.getOrPut(packageName) { isPackageInstalled(packageName) }
+            }
+            val rawTargetedActiveBlockIds = activeBlockIds.filterTo(linkedSetOf()) { blockId ->
+                scheduleGroupTargetsByBlock[blockId].orEmpty().isNotEmpty() ||
+                    scheduleAppTargetsByBlock[blockId].orEmpty().isNotEmpty()
+            }
+            val scheduledGroupIds = rawTargetedActiveBlockIds.flatMapTo(linkedSetOf()) { blockId ->
+                scheduleGroupTargetsByBlock[blockId].orEmpty().filterTo(linkedSetOf()) { groupId ->
+                    validGroupIds.contains(groupId)
+                }
+            }
+            val scheduledAppPackages = rawTargetedActiveBlockIds.flatMapTo(linkedSetOf()) { blockId ->
+                scheduleAppTargetsByBlock[blockId].orEmpty().filterTo(linkedSetOf()) { packageName ->
+                    isInstalledCached(packageName)
+                }
+            }
+            val targetedActiveBlockIds = rawTargetedActiveBlockIds.filterTo(linkedSetOf()) { blockId ->
+                scheduleGroupTargetsByBlock[blockId].orEmpty().any(validGroupIds::contains) ||
+                    scheduleAppTargetsByBlock[blockId].orEmpty().any(::isInstalledCached)
+            }
+            val warningBlockIds = when {
+                activeBlockIds.isEmpty() -> emptySet()
+                targetedActiveBlockIds.isNotEmpty() -> emptySet()
+                rawTargetedActiveBlockIds.isEmpty() -> activeBlockIds
+                else -> rawTargetedActiveBlockIds
+            }
+            val warning = if (warningBlockIds.isNotEmpty()) {
+                val blockNamesById = scheduleBlocks.associateBy(com.ankit.destination.data.ScheduleBlock::id)
+                val names = warningBlockIds.joinToString(", ") { blockId ->
+                    blockNamesById[blockId]?.name ?: "block#$blockId"
+                }
+                if (rawTargetedActiveBlockIds.isEmpty()) {
+                    "Schedule window active but no targets are configured: $names"
+                } else {
+                    "Schedule window active but no effective installed or valid targets: $names"
+                }
+            } else {
+                null
+            }
+            return ActiveScheduleTargets(
+                targetedActiveBlockIds = targetedActiveBlockIds,
+                scheduledGroupIds = scheduledGroupIds,
+                scheduledAppPackages = scheduledAppPackages,
+                warning = warning
+            )
         }
 
         internal fun resolveLiveScheduleState(

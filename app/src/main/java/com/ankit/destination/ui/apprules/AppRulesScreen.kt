@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ankit.destination.policy.PolicyEngine
 import com.ankit.destination.security.AppLockManager
+import com.ankit.destination.ui.UiInvalidationBus
 import com.ankit.destination.ui.components.AdminSessionBanner
 import com.ankit.destination.ui.components.AdminSessionDialog
 import com.ankit.destination.ui.components.AppPickerDialog
@@ -57,10 +58,11 @@ import com.ankit.destination.ui.components.collectAsStateWithLifecycleCompat
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-fun AppRulesScreen() {
+fun AppRulesScreen(
+    policyEngine: PolicyEngine,
+    appLockManager: AppLockManager
+) {
     val context = LocalContext.current
-    val policyEngine = remember(context) { PolicyEngine(context.applicationContext) }
-    val appLockManager = remember(context) { AppLockManager(context) }
     val viewModel: AppRulesViewModel = viewModel(
         factory = AppRulesViewModelFactory(
             context.applicationContext,
@@ -69,12 +71,13 @@ fun AppRulesScreen() {
         )
     )
     val uiState by viewModel.uiState.collectAsStateWithLifecycleCompat()
+    val invalidation by UiInvalidationBus.latest.collectAsStateWithLifecycleCompat()
     var showPicker by remember { mutableStateOf(false) }
     var showBulkInput by remember { mutableStateOf(false) }
     var showAddMenu by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
-        viewModel.refresh()
+    LaunchedEffect(viewModel, invalidation.version) {
+        viewModel.onInvalidation(invalidation.version)
     }
 
     if (uiState.showAuthDialog) {

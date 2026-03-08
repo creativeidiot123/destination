@@ -42,7 +42,6 @@ import androidx.compose.material3.SuggestionChipDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.FilterChip
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -52,16 +51,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Schedule
 import com.ankit.destination.policy.PolicyEngine
 import com.ankit.destination.security.AppLockManager
+import com.ankit.destination.ui.UiInvalidationBus
 import com.ankit.destination.ui.components.AdminSessionBanner
 import com.ankit.destination.ui.components.AdminSessionDialog
 import com.ankit.destination.ui.components.collectAsStateWithLifecycleCompat
@@ -73,11 +70,11 @@ enum class GroupFilter { All, StrictActive, Emergency }
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun GroupListScreen(
+    policyEngine: PolicyEngine,
+    appLockManager: AppLockManager,
     onNavigateToGroupDetail: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
-    val policyEngine = remember(context) { PolicyEngine(context.applicationContext) }
-    val appLockManager = remember(context) { AppLockManager(context) }
     val viewModel: GroupListViewModel = viewModel(
         factory = GroupListViewModelFactory(
             context.applicationContext,
@@ -86,14 +83,10 @@ fun GroupListScreen(
         )
     )
     val uiState by viewModel.uiState.collectAsStateWithLifecycleCompat()
+    val invalidation by UiInvalidationBus.latest.collectAsStateWithLifecycleCompat()
     var searchQuery by remember { mutableStateOf("") }
     var selectedFilter by remember { mutableStateOf(GroupFilter.All) }
-    val lifecycleOwner = LocalLifecycleOwner.current
     val toast = remember(context) { { message: String -> context.showShortToast(message) } }
-
-    LaunchedEffect(Unit) {
-        viewModel.refresh()
-    }
 
     LaunchedEffect(viewModel) {
         viewModel.events.collectLatest { event ->
@@ -103,16 +96,8 @@ fun GroupListScreen(
         }
     }
 
-    DisposableEffect(lifecycleOwner, viewModel) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                viewModel.refresh()
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-        }
+    LaunchedEffect(viewModel, invalidation.version) {
+        viewModel.onInvalidation(invalidation.version)
     }
 
     if (uiState.showAuthDialog) {

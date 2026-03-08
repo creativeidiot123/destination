@@ -16,6 +16,7 @@ import com.ankit.destination.ui.invalidateInstalledAppOptionsCache
 class PackageChangeReceiver : BroadcastReceiver() {
     companion object {
         private const val EXECUTOR_KEY = "package-change"
+        private const val ACTION_PACKAGE_ADDED_VALUE = Intent.ACTION_PACKAGE_ADDED
         private val pendingEvents = linkedMapOf<String, PendingPackageEvent>()
         private const val PREF_KEY = "runtime_package_receiver"
         private const val PREF_NAME = "destination_runtime_receivers"
@@ -75,6 +76,22 @@ class PackageChangeReceiver : BroadcastReceiver() {
             val prefs = context.applicationContext.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
             prefs.edit().clear().apply()
         }
+
+        internal fun installedPackageNamesForStrictSchedule(
+            events: List<StrictScheduleInstallEvent>
+        ): Set<String> {
+            return events.asSequence()
+                .filter { event -> event.sawPackageAdded || event.action == ACTION_PACKAGE_ADDED_VALUE }
+                .map { event -> event.packageName.trim() }
+                .filter(String::isNotBlank)
+                .toCollection(linkedSetOf())
+        }
+
+        internal data class StrictScheduleInstallEvent(
+            val action: String,
+            val packageName: String,
+            val sawPackageAdded: Boolean
+        )
     }
 
     override fun onReceive(context: Context, intent: Intent?) {
@@ -107,10 +124,12 @@ class PackageChangeReceiver : BroadcastReceiver() {
                 pendingEvents[packageName] = PendingPackageEvent(
                     packageName = packageName,
                     action = action,
+                    sawPackageAdded = action == Intent.ACTION_PACKAGE_ADDED,
                     pendingResults = mutableListOf(pending)
                 )
             } else {
                 existing.action = action
+                existing.sawPackageAdded = existing.sawPackageAdded || action == Intent.ACTION_PACKAGE_ADDED
                 existing.pendingResults += pending
                 FocusLog.v(FocusEventId.PACKAGE_INSTALL_DETECT, "batched with existing event for $packageName")
             }
@@ -136,6 +155,25 @@ class PackageChangeReceiver : BroadcastReceiver() {
                     }
                     return@executeLatest
                 }
+                installedPackageNamesForStrictSchedule(
+                    eventsToProcess.map { event ->
+                        StrictScheduleInstallEvent(
+                            action = event.action,
+                            packageName = event.packageName,
+                            sawPackageAdded = event.sawPackageAdded
+                        )
+                    }
+                ).forEach { packageNameToStage ->
+                    runCatching {
+                        engine.onNewPackageInstalledDuringStrictSchedule(packageNameToStage)
+                    }.onFailure { throwable ->
+                        FocusLog.e(
+                            FocusEventId.STRICT_INSTALL_SUSPEND_FAIL,
+                            "Strict install staging failed for $packageNameToStage",
+                            throwable
+                        )
+                    }
+                }
                 val triggerLabel = eventsToProcess.joinToString(",") { "${it.action}:${it.packageName}" }
                 PolicyApplyOrchestrator.requestApply(
                     context = context,
@@ -158,6 +196,7 @@ class PackageChangeReceiver : BroadcastReceiver() {
     private data class PendingPackageEvent(
         val packageName: String,
         var action: String,
+        var sawPackageAdded: Boolean,
         val pendingResults: MutableList<BroadcastReceiver.PendingResult>
     )
 }

@@ -8,6 +8,9 @@ import com.ankit.destination.data.GlobalControls
 import com.ankit.destination.data.ManagedNetworkModeSetting
 import com.ankit.destination.policy.PolicyEngine
 import com.ankit.destination.security.AppLockManager
+import com.ankit.destination.ui.RefreshCoordinator
+import com.ankit.destination.ui.UiInvalidationBus
+import com.ankit.destination.ui.runCatchingNonCancellation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -65,47 +68,90 @@ class DeviceControlsViewModel(
     private val policyEngine: PolicyEngine,
     private val appLockManager: AppLockManager
 ) : ViewModel() {
+    private val refreshCoordinator = RefreshCoordinator()
     private val _uiState = MutableStateFlow(DeviceControlsUiState())
     val uiState: StateFlow<DeviceControlsUiState> = _uiState.asStateFlow()
+    private var hasLoadedOnce = false
+    private var lastHandledInvalidationVersion = UiInvalidationBus.latest.value.version
 
-    fun refresh() {
+    init {
+        refresh(force = true)
+    }
+
+    fun refresh(force: Boolean = false) {
+        if (!refreshCoordinator.tryStart(force)) return
+
         viewModelScope.launch {
-            val previous = _uiState.value
-            _uiState.update { it.copy(isLoading = true) }
-            val refreshed = withContext(Dispatchers.IO) {
-                val controls = policyEngine.getGlobalControlsAsync()
-                val snapshot = policyEngine.diagnosticsSnapshot()
-                DeviceControlsUiState(
-                    isLoading = false,
-                    protectionActive = appLockManager.isProtectionEnabled(),
-                    hasPasswordSet = appLockManager.isPasswordSet(),
-                    isDeviceOwner = policyEngine.isDeviceOwner(),
-                    lockTimeEnabled = controls.lockTime,
-                    lockDnsVpnEnabled = controls.lockVpnDns,
-                    lockDevOptionsEnabled = controls.lockDevOptions,
-                    disableSafeModeEnabled = controls.disableSafeMode,
-                    lockUserCreationEnabled = controls.lockUserCreation,
-                    lockWorkProfileEnabled = controls.lockWorkProfile,
-                    lockCloningEnabled = controls.lockCloningBestEffort,
-                    managedNetworkMode = runCatching {
-                        ManagedNetworkModeSetting.valueOf(controls.managedNetworkMode)
-                    }.getOrDefault(ManagedNetworkModeSetting.UNMANAGED),
-                    managedVpnPackage = controls.managedVpnPackage.orEmpty(),
-                    managedVpnLockdown = controls.managedVpnLockdown,
-                    privateDnsHost = controls.privateDnsHost.orEmpty(),
-                    blockedGroups = (snapshot.scheduleBlockedGroups + snapshot.budgetBlockedGroupIds).size,
-                    blockedApps = (snapshot.budgetBlockedPackages + snapshot.lastSuspendedPackages).size,
-                    strictGroups = snapshot.scheduleBlockedGroups.size,
-                    currentReason = snapshot.currentLockReason ?: snapshot.scheduleLockReason ?: snapshot.budgetReason,
-                    adminSessionActive = appLockManager.isAdminSessionActive(),
-                    adminSessionRemainingMs = appLockManager.getSessionRemainingMs()
-                )
-            }
-            _uiState.value = refreshed.copy(
-                statusMessage = previous.statusMessage,
-                isError = previous.isError
-            )
+            var shouldRerun: Boolean
+            do {
+                var loadSucceeded = false
+                try {
+                    val previous = _uiState.value
+                    if (!hasLoadedOnce) {
+                        _uiState.update { it.copy(isLoading = true) }
+                    }
+                    val refreshed = withContext(Dispatchers.IO) {
+                        runCatchingNonCancellation {
+                            val controls = policyEngine.getGlobalControlsAsync()
+                            val snapshot = policyEngine.uiSnapshot()
+                            DeviceControlsUiState(
+                                isLoading = false,
+                                protectionActive = appLockManager.isProtectionEnabled(),
+                                hasPasswordSet = appLockManager.isPasswordSet(),
+                                isDeviceOwner = policyEngine.isDeviceOwner(),
+                                lockTimeEnabled = controls.lockTime,
+                                lockDnsVpnEnabled = controls.lockVpnDns,
+                                lockDevOptionsEnabled = controls.lockDevOptions,
+                                disableSafeModeEnabled = controls.disableSafeMode,
+                                lockUserCreationEnabled = controls.lockUserCreation,
+                                lockWorkProfileEnabled = controls.lockWorkProfile,
+                                lockCloningEnabled = controls.lockCloningBestEffort,
+                                managedNetworkMode = runCatching {
+                                    ManagedNetworkModeSetting.valueOf(controls.managedNetworkMode)
+                                }.getOrDefault(ManagedNetworkModeSetting.UNMANAGED),
+                                managedVpnPackage = controls.managedVpnPackage.orEmpty(),
+                                managedVpnLockdown = controls.managedVpnLockdown,
+                                privateDnsHost = controls.privateDnsHost.orEmpty(),
+                                blockedGroups = (snapshot.scheduleBlockedGroups + snapshot.budgetBlockedGroupIds).size,
+                                blockedApps = (snapshot.budgetBlockedPackages + snapshot.lastSuspendedPackages).size,
+                                strictGroups = snapshot.scheduleBlockedGroups.size,
+                                currentReason = snapshot.currentLockReason
+                                    ?: snapshot.scheduleLockReason
+                                    ?: snapshot.budgetReason,
+                                adminSessionActive = appLockManager.isAdminSessionActive(),
+                                adminSessionRemainingMs = appLockManager.getSessionRemainingMs()
+                            )
+                        }
+                    }
+                    refreshed.onSuccess { state ->
+                        _uiState.value = state.copy(
+                            statusMessage = previous.statusMessage.takeIf { !previous.isError },
+                            isError = false
+                        )
+                        hasLoadedOnce = true
+                        loadSucceeded = true
+                    }.onFailure { throwable ->
+                        _uiState.update {
+                            it.copy(
+                                isLoading = false,
+                                adminSessionActive = appLockManager.isAdminSessionActive(),
+                                adminSessionRemainingMs = appLockManager.getSessionRemainingMs(),
+                                statusMessage = throwable.message ?: "Failed to load overview controls.",
+                                isError = true
+                            )
+                        }
+                    }
+                } finally {
+                    shouldRerun = refreshCoordinator.finish(loadSucceeded)
+                }
+            } while (shouldRerun)
         }
+    }
+
+    fun onInvalidation(version: Long) {
+        if (version <= 0L || version <= lastHandledInvalidationVersion) return
+        lastHandledInvalidationVersion = version
+        refresh(force = true)
     }
 
     fun requestProtectionToggle() {
@@ -113,8 +159,17 @@ class DeviceControlsViewModel(
         if (state.protectionActive) {
             _uiState.update { it.copy(showAuthDialog = true, authReason = AuthReason.TOGGLE_PROTECTION) }
         } else if (state.hasPasswordSet) {
-            appLockManager.enableProtection()
-            refresh()
+            if (appLockManager.enableProtection()) {
+                UiInvalidationBus.invalidate("protection_state_updated")
+                refresh(force = true)
+            } else {
+                _uiState.update {
+                    it.copy(
+                        statusMessage = "Failed to enable password protection.",
+                        isError = true
+                    )
+                }
+            }
         } else {
             _uiState.update { it.copy(showSetPasswordDialog = true) }
         }
@@ -200,15 +255,16 @@ class DeviceControlsViewModel(
         when (authReason) {
             AuthReason.TOGGLE_PROTECTION -> {
                 if (appLockManager.disableProtection(password)) {
+                    UiInvalidationBus.invalidate("protection_state_updated")
                     _uiState.update {
                         it.copy(statusMessage = "Password protection disabled.", isError = false)
                     }
+                    refresh(force = true)
                 } else {
                     _uiState.update {
                         it.copy(statusMessage = "Password verification failed.", isError = true)
                     }
                 }
-                refresh()
             }
             AuthReason.TOGGLE_VPN_LOCKDOWN -> {
                 if (pendingVpnLockdownValue != null) {
@@ -227,6 +283,7 @@ class DeviceControlsViewModel(
 
     fun setPassword(password: String) {
         if (appLockManager.createPasswordAndEnableProtection(password)) {
+            UiInvalidationBus.invalidate("protection_state_updated")
             _uiState.update {
                 it.copy(
                     showSetPasswordDialog = false,
@@ -292,7 +349,7 @@ class DeviceControlsViewModel(
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, statusMessage = null) }
             val result = withContext(Dispatchers.IO) {
-                runCatching {
+                runCatchingNonCancellation {
                     val updated = transform(policyEngine.getGlobalControlsAsync())
                     policyEngine.setGlobalControlsAsync(updated)
                     PolicyApplyOrchestrator.applyNow(
@@ -309,7 +366,7 @@ class DeviceControlsViewModel(
                         isError = false
                     )
                 }
-                refresh()
+                UiInvalidationBus.invalidate("device_controls_updated")
             }.onFailure { throwable ->
                 _uiState.update {
                     it.copy(

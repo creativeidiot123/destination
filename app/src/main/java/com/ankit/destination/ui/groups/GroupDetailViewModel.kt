@@ -16,8 +16,10 @@ import com.ankit.destination.data.ScheduleTimezoneMode
 import com.ankit.destination.policy.PolicyEngine
 import com.ankit.destination.security.AppLockManager
 import com.ankit.destination.ui.AppOption
+import com.ankit.destination.ui.UiInvalidationBus
 import com.ankit.destination.ui.deriveGroupId
 import com.ankit.destination.ui.loadInstalledAppOptions
+import com.ankit.destination.ui.runCatchingNonCancellation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -92,6 +94,10 @@ class GroupDetailViewModel(
     )
     val events = _events
 
+    init {
+        refresh()
+    }
+
     fun refresh() {
         viewModelScope.launch {
             val previous = _uiState.value
@@ -102,57 +108,71 @@ class GroupDetailViewModel(
             val isNew = resolvedGroupId.isNullOrBlank()
 
             val loadedState = withContext(Dispatchers.IO) {
-                val budgetDao = db.budgetDao()
-                val scheduleDao = db.scheduleDao()
-                val protectionSnapshot = policyEngine.getAppProtectionSnapshotAsync()
-                val groupLimit = resolvedGroupId?.let { budgetDao.getGroupLimit(it) }
-                val emergencyConfig = resolvedGroupId?.let { budgetDao.getGroupEmergencyConfig(it) }
-                val memberPackages = resolvedGroupId
-                    ?.let { budgetDao.getPackagesForGroup(it) }
-                    .orEmpty()
-                    .filter(protectionSnapshot::isEligibleForGroupMembership)
-                    .sorted()
-                val scheduleBlock = resolvedGroupId
-                    ?.let { scheduleDao.getBlocksForGroup(it).firstOrNull() }
-                val appOptions = loadInstalledAppOptions(
-                    context = appContext,
-                    includePackageNames = memberPackages.toSet()
-                )
+                runCatchingNonCancellation {
+                    val budgetDao = db.budgetDao()
+                    val scheduleDao = db.scheduleDao()
+                    val protectionSnapshot = policyEngine.getAppProtectionSnapshotAsync()
+                    val groupLimit = resolvedGroupId?.let { budgetDao.getGroupLimit(it) }
+                    val emergencyConfig = resolvedGroupId?.let { budgetDao.getGroupEmergencyConfig(it) }
+                    val memberPackages = resolvedGroupId
+                        ?.let { budgetDao.getPackagesForGroup(it) }
+                        .orEmpty()
+                        .filter(protectionSnapshot::isEligibleForGroupMembership)
+                        .sorted()
+                    val scheduleBlock = resolvedGroupId
+                        ?.let { scheduleDao.getBlocksForGroup(it).firstOrNull() }
+                    val appOptions = loadInstalledAppOptions(
+                        context = appContext,
+                        includePackageNames = memberPackages.toSet(),
+                        protectionSnapshot = protectionSnapshot
+                    )
 
-                GroupDetailUiState(
-                    groupId = resolvedGroupId,
-                    isNewGroup = isNew,
-                    name = groupLimit?.name.orEmpty(),
-                    isLoading = false,
-                    adminSessionActive = adminActive,
-                    adminSessionRemainingMs = remainingMs,
-                    availableApps = appOptions,
-                    priorityIndex = groupLimit?.priorityIndex ?: 1000,
-                    strictEnabled = groupLimit?.strictEnabled ?: false,
-                    scheduleBlockId = scheduleBlock?.id,
-                    hasScheduleBlock = scheduleBlock != null,
-                    scheduleEnabled = scheduleBlock?.enabled == true,
-                    scheduleDaysMask = scheduleBlock?.daysMask ?: DEFAULT_WEEKDAY_MASK,
-                    scheduleStartMinute = scheduleBlock?.startMinute ?: DEFAULT_START_MINUTE,
-                    scheduleEndMinute = scheduleBlock?.endMinute ?: DEFAULT_END_MINUTE,
-                    hourlyLimitMs = groupLimit?.hourlyLimitMs ?: 0L,
-                    dailyLimitMs = groupLimit?.dailyLimitMs ?: 0L,
-                    opensPerDay = groupLimit?.opensPerDay ?: 0,
-                    allAppsTargetingEnabled = isAllAppsScheduleTargetEnabled(
+                    GroupDetailUiState(
+                        groupId = resolvedGroupId,
+                        isNewGroup = isNew,
+                        name = groupLimit?.name.orEmpty(),
+                        isLoading = false,
+                        adminSessionActive = adminActive,
+                        adminSessionRemainingMs = remainingMs,
+                        availableApps = appOptions,
+                        priorityIndex = groupLimit?.priorityIndex ?: 1000,
                         strictEnabled = groupLimit?.strictEnabled ?: false,
-                        storedTargetMode = groupLimit?.scheduleTargetMode.orEmpty()
-                    ),
-                    emergencyEnabled = emergencyConfig?.enabled ?: false,
-                    unlocksPerDay = clampEmergencyUnlocksPerDay(emergencyConfig?.unlocksPerDay ?: 0),
-                    minutesPerUnlock = clampEmergencyMinutesPerUnlock(emergencyConfig?.minutesPerUnlock ?: 0),
-                    memberPackages = memberPackages
-                )
+                        scheduleBlockId = scheduleBlock?.id,
+                        hasScheduleBlock = scheduleBlock != null,
+                        scheduleEnabled = scheduleBlock?.enabled == true,
+                        scheduleDaysMask = scheduleBlock?.daysMask ?: DEFAULT_WEEKDAY_MASK,
+                        scheduleStartMinute = scheduleBlock?.startMinute ?: DEFAULT_START_MINUTE,
+                        scheduleEndMinute = scheduleBlock?.endMinute ?: DEFAULT_END_MINUTE,
+                        hourlyLimitMs = groupLimit?.hourlyLimitMs ?: 0L,
+                        dailyLimitMs = groupLimit?.dailyLimitMs ?: 0L,
+                        opensPerDay = groupLimit?.opensPerDay ?: 0,
+                        allAppsTargetingEnabled = isAllAppsScheduleTargetEnabled(
+                            strictEnabled = groupLimit?.strictEnabled ?: false,
+                            storedTargetMode = groupLimit?.scheduleTargetMode.orEmpty()
+                        ),
+                        emergencyEnabled = emergencyConfig?.enabled ?: false,
+                        unlocksPerDay = clampEmergencyUnlocksPerDay(emergencyConfig?.unlocksPerDay ?: 0),
+                        minutesPerUnlock = clampEmergencyMinutesPerUnlock(emergencyConfig?.minutesPerUnlock ?: 0),
+                        memberPackages = memberPackages
+                    )
+                }
             }
-
-            _uiState.value = loadedState.copy(
-                statusMessage = previous.statusMessage,
-                isError = previous.isError
-            )
+            loadedState.onSuccess { state ->
+                _uiState.value = state.copy(
+                    statusMessage = previous.statusMessage.takeIf { !previous.isError },
+                    isError = false
+                )
+            }.onFailure { throwable ->
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        adminSessionActive = appLockManager.isAdminSessionActive(),
+                        adminSessionRemainingMs = appLockManager.getSessionRemainingMs(),
+                        statusMessage = throwable.message ?: "Failed to load group details.",
+                        isError = true
+                    )
+                }
+            }
         }
     }
 
@@ -342,6 +362,17 @@ class GroupDetailViewModel(
                 }
                 return@launch
             }
+            validateGroupScheduleWindow(
+                scheduleEnabled = current.scheduleEnabled,
+                startMinute = current.scheduleStartMinute,
+                endMinute = current.scheduleEndMinute
+            )?.let { validationMessage ->
+                _events.emit(GroupDetailEvent.Toast(validationMessage))
+                _uiState.update {
+                    it.copy(statusMessage = validationMessage, isError = true)
+                }
+                return@launch
+            }
 
             val finalGroupId = current.groupId ?: deriveGroupId(trimmedName)
             if (finalGroupId.isBlank()) {
@@ -355,7 +386,7 @@ class GroupDetailViewModel(
             _uiState.update { it.copy(isLoading = true, statusMessage = null) }
 
             val result = withContext(Dispatchers.IO) {
-                runCatching {
+                runCatchingNonCancellation {
                     val protectionSnapshot = policyEngine.getAppProtectionSnapshotAsync()
                     val eligibleMembers = current.memberPackages
                         .filter(protectionSnapshot::isEligibleForGroupMembership)
@@ -424,6 +455,7 @@ class GroupDetailViewModel(
 
             result.onSuccess {
                 currentGroupId = finalGroupId
+                UiInvalidationBus.invalidate("group_detail_saved")
                 _uiState.update {
                     it.copy(
                         groupId = finalGroupId,
@@ -453,7 +485,7 @@ class GroupDetailViewModel(
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, statusMessage = null) }
             val result = withContext(Dispatchers.IO) {
-                runCatching {
+                runCatchingNonCancellation {
                     db.withTransaction {
                         val budgetDao = db.budgetDao()
                         val scheduleDao = db.scheduleDao()
@@ -469,6 +501,7 @@ class GroupDetailViewModel(
 
             result.onSuccess {
                 currentGroupId = null
+                UiInvalidationBus.invalidate("group_detail_deleted")
                 _events.emit(GroupDetailEvent.Finish("Group deleted."))
             }.onFailure { throwable ->
                 _events.emit(GroupDetailEvent.Toast(throwable.message ?: "Failed to delete group."))

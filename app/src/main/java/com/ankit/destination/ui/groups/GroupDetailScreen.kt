@@ -85,11 +85,11 @@ private enum class GroupLimitDialogType {
 @Composable
 fun GroupDetailScreen(
     groupId: String?,
+    policyEngine: PolicyEngine,
+    appLockManager: AppLockManager,
     onBack: () -> Unit = {}
 ) {
     val context = LocalContext.current
-    val policyEngine = remember(context) { PolicyEngine(context.applicationContext) }
-    val appLockManager = remember(context) { AppLockManager(context) }
     val viewModel: GroupDetailViewModel = viewModel(
         factory = GroupDetailViewModelFactory(
             appContext = context.applicationContext,
@@ -108,10 +108,6 @@ fun GroupDetailScreen(
         strictEnabled = uiState.strictEnabled,
         allAppsEnabled = uiState.allAppsTargetingEnabled
     )
-
-    LaunchedEffect(Unit) {
-        viewModel.refresh()
-    }
 
     LaunchedEffect(viewModel) {
         viewModel.events.collectLatest { event ->

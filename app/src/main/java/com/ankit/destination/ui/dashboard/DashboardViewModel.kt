@@ -7,6 +7,9 @@ import com.ankit.destination.enforce.AccessibilityStatusMonitor
 import com.ankit.destination.enforce.PolicyApplyOrchestrator
 import com.ankit.destination.policy.PolicyEngine
 import com.ankit.destination.security.AppLockManager
+import com.ankit.destination.ui.RefreshCoordinator
+import com.ankit.destination.ui.UiInvalidationBus
+import com.ankit.destination.ui.runCatchingNonCancellation
 import com.ankit.destination.usage.UsageAccessMonitor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -59,14 +62,18 @@ class DashboardViewModel(
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(DashboardUiState())
     val uiState: StateFlow<DashboardUiState> = _uiState.asStateFlow()
+    private val refreshCoordinator = RefreshCoordinator()
+    private var hasLoadedOnce = false
+    private var lastHandledInvalidationVersion = UiInvalidationBus.latest.value.version
 
     init {
+        refresh(force = true)
         viewModelScope.launch {
             UsageAccessMonitor.currentState
                 .map { it.usageAccessGranted }
                 .distinctUntilChanged()
                 .drop(1)
-                .collect { refresh() }
+                .collect { refresh(force = true) }
         }
         viewModelScope.launch {
             AccessibilityStatusMonitor.currentState
@@ -80,66 +87,111 @@ class DashboardViewModel(
                 }
                 .distinctUntilChanged()
                 .drop(1)
-                .collect { refresh() }
+                .collect { refresh(force = true) }
         }
     }
 
-    fun refresh() {
-        viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true) }
-            val refreshed = withContext(Dispatchers.IO) {
-                val snapshot = policyEngine.diagnosticsSnapshot()
-                val lastApplied = if (snapshot.lastAppliedAtMs > 0L) {
-                    DateFormat.getDateTimeInstance().format(Date(snapshot.lastAppliedAtMs))
-                } else {
-                    "never"
-                }
-                DashboardUiState(
-                    isDeviceOwner = policyEngine.isDeviceOwner(),
-                    isLoading = false,
-                    protectionActive = appLockManager.isProtectionEnabled(),
-                    vpnLocked = snapshot.vpnActive,
-                    totalBlockedApps = (snapshot.budgetBlockedPackages + snapshot.lastSuspendedPackages).size,
-                    activeSchedules = snapshot.scheduleBlockedGroups.size,
-                    activeEmergencySessions = 0,
-                    blockedGroups = emptyList(),
-                    strictActiveGroups = if (snapshot.scheduleStrictActive) snapshot.scheduleBlockedGroups.size else 0,
-                    lastApplied = lastApplied,
-                    lastError = snapshot.lastError,
-                    accessibilityServiceEnabled = snapshot.accessibilityServiceEnabled,
-                    accessibilityServiceRunning = snapshot.accessibilityServiceRunning,
-                    accessibilityDegradedReason = snapshot.accessibilityDegradedReason,
-                    nextPolicyWake = snapshot.nextPolicyWakeAtMs?.let { wakeAt ->
-                        val formatted = DateFormat.getDateTimeInstance().format(Date(wakeAt))
-                        val reason = snapshot.nextPolicyWakeReason ?: "policy wake"
-                        "$reason at $formatted"
-                    },
-                    usageAccessGranted = snapshot.usageAccessGranted,
-                    usageAccessRecoveryLockdownActive = snapshot.usageAccessRecoveryLockdownActive,
-                    usageAccessRecoveryReason = snapshot.usageAccessRecoveryReason,
-                    adminSessionActive = appLockManager.isAdminSessionActive(),
-                    adminSessionRemainingMs = appLockManager.getSessionRemainingMs()
-                )
-            }
+    fun refresh(force: Boolean = false) {
+        if (!refreshCoordinator.tryStart(force)) return
 
-            _uiState.value = refreshed
+        viewModelScope.launch {
+            var shouldRerun: Boolean
+            do {
+                var loadSucceeded = false
+                try {
+                    if (!hasLoadedOnce) {
+                        _uiState.update { it.copy(isLoading = true) }
+                    }
+                    val refreshed = withContext(Dispatchers.IO) {
+                        runCatchingNonCancellation {
+                            val snapshot = policyEngine.dashboardSnapshot()
+                            val lastApplied = if (snapshot.lastAppliedAtMs > 0L) {
+                                DateFormat.getDateTimeInstance().format(Date(snapshot.lastAppliedAtMs))
+                            } else {
+                                "never"
+                            }
+                            DashboardUiState(
+                                isDeviceOwner = snapshot.deviceOwner,
+                                isLoading = false,
+                                protectionActive = appLockManager.isProtectionEnabled(),
+                                vpnLocked = snapshot.vpnActive,
+                                totalBlockedApps = snapshot.totalBlockedApps,
+                                activeSchedules = snapshot.scheduleBlockedGroupsCount,
+                                activeEmergencySessions = 0,
+                                blockedGroups = emptyList(),
+                                strictActiveGroups = if (snapshot.scheduleStrictActive) {
+                                    snapshot.scheduleBlockedGroupsCount
+                                } else {
+                                    0
+                                },
+                                lastApplied = lastApplied,
+                                lastError = snapshot.lastError,
+                                accessibilityServiceEnabled = snapshot.accessibilityServiceEnabled,
+                                accessibilityServiceRunning = snapshot.accessibilityServiceRunning,
+                                accessibilityDegradedReason = snapshot.accessibilityDegradedReason,
+                                nextPolicyWake = snapshot.nextPolicyWakeAtMs?.let { wakeAt ->
+                                    val formatted = DateFormat.getDateTimeInstance().format(Date(wakeAt))
+                                    val reason = snapshot.nextPolicyWakeReason ?: "policy wake"
+                                    "$reason at $formatted"
+                                },
+                                usageAccessGranted = snapshot.usageAccessGranted,
+                                usageAccessRecoveryLockdownActive = snapshot.usageAccessRecoveryLockdownActive,
+                                usageAccessRecoveryReason = snapshot.usageAccessRecoveryReason,
+                                adminSessionActive = appLockManager.isAdminSessionActive(),
+                                adminSessionRemainingMs = appLockManager.getSessionRemainingMs()
+                            )
+                        }
+                    }
+
+                    refreshed.onSuccess { state ->
+                        _uiState.value = state
+                        hasLoadedOnce = true
+                        loadSucceeded = true
+                    }.onFailure { throwable ->
+                        _uiState.update {
+                            it.copy(
+                                isLoading = false,
+                                adminSessionActive = appLockManager.isAdminSessionActive(),
+                                adminSessionRemainingMs = appLockManager.getSessionRemainingMs(),
+                                lastError = throwable.message ?: "Failed to load dashboard."
+                            )
+                        }
+                    }
+                } finally {
+                    shouldRerun = refreshCoordinator.finish(loadSucceeded)
+                }
+            } while (shouldRerun)
         }
+    }
+
+    fun onInvalidation(version: Long) {
+        if (version <= 0L || version <= lastHandledInvalidationVersion) return
+        lastHandledInvalidationVersion = version
+        refresh(force = true)
     }
 
     fun applyNow() {
         viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                UsageAccessMonitor.refreshNow(
-                    context = appContext,
-                    reason = "dashboard_apply_now",
-                    requestPolicyRefreshIfChanged = false
-                )
-                PolicyApplyOrchestrator.applyNow(
-                    context = appContext,
-                    reason = "ui_reapply"
-                )
+            val result = withContext(Dispatchers.IO) {
+                runCatchingNonCancellation {
+                    UsageAccessMonitor.refreshNow(
+                        context = appContext,
+                        reason = "dashboard_apply_now",
+                        requestPolicyRefreshIfChanged = false
+                    )
+                    PolicyApplyOrchestrator.applyNow(
+                        context = appContext,
+                        reason = "ui_reapply"
+                    )
+                }
             }
-            refresh()
+            result.onSuccess {
+                UiInvalidationBus.invalidate("dashboard_apply_now")
+            }.onFailure { throwable ->
+                _uiState.update {
+                    it.copy(lastError = throwable.message ?: "Failed to apply rules now.")
+                }
+            }
         }
     }
 }

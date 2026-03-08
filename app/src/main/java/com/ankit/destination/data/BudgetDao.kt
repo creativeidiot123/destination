@@ -133,6 +133,9 @@ interface BudgetDao {
     @Query("SELECT * FROM usage_snapshots WHERE windowKey = :windowKey")
     suspend fun getUsageSnapshots(windowKey: String): List<UsageSnapshot>
 
+    @Query("SELECT * FROM usage_snapshots ORDER BY windowKey ASC, packageName ASC")
+    suspend fun getAllUsageSnapshots(): List<UsageSnapshot>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertUsageSnapshots(rows: List<UsageSnapshot>)
 
@@ -159,6 +162,9 @@ interface BudgetDao {
 
     @Query("SELECT * FROM emergency_state WHERE dayKey = :dayKey")
     suspend fun getEmergencyStatesForDay(dayKey: String): List<EmergencyState>
+
+    @Query("SELECT * FROM emergency_state ORDER BY dayKey ASC, targetType ASC, targetId ASC")
+    suspend fun getAllEmergencyStates(): List<EmergencyState>
 
     @Query(
         "SELECT * FROM emergency_state WHERE dayKey = :dayKey AND targetType = :targetType AND targetId = :targetId LIMIT 1"

@@ -422,6 +422,35 @@ class PolicyStore(context: Context) {
         prefs.edit().putString(KEY_CURRENT_LOCK_REASON, reason).apply()
     }
 
+    internal fun setLastPackageSuspendPrototypeStatus(
+        backend: PackageSuspendBackendStatus,
+        errorMessage: String?
+    ) {
+        prefs.edit()
+            .putString(KEY_LAST_PACKAGE_SUSPEND_BACKEND, backend.name)
+            .putString(KEY_LAST_PACKAGE_SUSPEND_PROTOTYPE_ERROR, errorMessage)
+            .apply()
+    }
+
+    fun getLastPackageSuspendBackend(): String? {
+        return prefs.getString(KEY_LAST_PACKAGE_SUSPEND_BACKEND, null)
+    }
+
+    fun getLastPackageSuspendPrototypeError(): String? {
+        return prefs.getString(KEY_LAST_PACKAGE_SUSPEND_PROTOTYPE_ERROR, null)
+    }
+
+    fun isHiddenSuspendPrototypeEnabled(): Boolean {
+        return prefs.getBoolean(
+            KEY_HIDDEN_SUSPEND_PROTOTYPE_ENABLED,
+            FocusConfig.prototypeHiddenSuspendDialogEnabled
+        )
+    }
+
+    fun setHiddenSuspendPrototypeEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_HIDDEN_SUSPEND_PROTOTYPE_ENABLED, enabled).apply()
+    }
+
     fun recordProvisioningSignal(
         action: String?,
         source: String?,
@@ -482,6 +511,58 @@ class PolicyStore(context: Context) {
     fun getProvisioningFinalizationAtMs(): Long? {
         val value = prefs.getLong(KEY_PROVISIONING_FINALIZATION_AT, -1L)
         return if (value > 0L) value else null
+    }
+
+    fun exportAllPreferences(): Map<String, Any?> {
+        return prefs.all.entries
+            .sortedBy { it.key }
+            .associate { entry ->
+                val normalizedValue = when (val value = entry.value) {
+                    is Boolean, is Float, is Int, is Long, is String -> value
+                    is Set<*> -> {
+                        require(value.all { it is String }) {
+                            "Unsupported SharedPreferences string set for key ${entry.key}"
+                        }
+                        value.filterIsInstance<String>().toSet()
+                    }
+                    null -> ""
+                    else -> error(
+                        "Unsupported SharedPreferences type for key ${entry.key}: ${value::class.java.name}"
+                    )
+                }
+                entry.key to normalizedValue
+            }
+    }
+
+    fun replaceAllPreferences(values: Map<String, Any?>, commitSynchronously: Boolean = false): Boolean {
+        synchronized(TOUCH_GRASS_LOCK) {
+            val editor = prefs.edit().clear()
+            values.entries.sortedBy { it.key }.forEach { (key, value) ->
+                when (value) {
+                    is Boolean -> editor.putBoolean(key, value)
+                    is Float -> editor.putFloat(key, value)
+                    is Int -> editor.putInt(key, value)
+                    is Long -> editor.putLong(key, value)
+                    is String -> editor.putString(key, value)
+                    is Set<*> -> {
+                        require(value.all { it is String }) {
+                            "Unsupported SharedPreferences string set for key $key"
+                        }
+                        editor.putStringSet(key, value.filterIsInstance<String>().toSet())
+                    }
+                    null -> editor.putString(key, null)
+                    else -> error(
+                        "Unsupported SharedPreferences restore type for key $key: ${value::class.java.name}"
+                    )
+                }
+            }
+            return if (commitSynchronously) {
+                editor.commit()
+            } else {
+                editor.apply()
+                true
+            }
+        }
     }
 
     fun resetForFreshStart() {
@@ -565,6 +646,9 @@ class PolicyStore(context: Context) {
         private const val KEY_PRIMARY_REASON_BY_PACKAGE = "primary_reason_by_package"
         private const val KEY_BLOCK_REASONS_BY_PACKAGE = "block_reasons_by_package"
         private const val KEY_CURRENT_LOCK_REASON = "current_lock_reason"
+        private const val KEY_LAST_PACKAGE_SUSPEND_BACKEND = "last_package_suspend_backend"
+        private const val KEY_LAST_PACKAGE_SUSPEND_PROTOTYPE_ERROR = "last_package_suspend_prototype_error"
+        private const val KEY_HIDDEN_SUSPEND_PROTOTYPE_ENABLED = "hidden_suspend_prototype_enabled"
         private const val KEY_PROVISIONING_SIGNAL_ACTION = "provisioning_signal_action"
         private const val KEY_PROVISIONING_SIGNAL_AT = "provisioning_signal_at"
         private const val KEY_PROVISIONING_SOURCE = "provisioning_source"
@@ -598,5 +682,3 @@ class PolicyStore(context: Context) {
         }
     }
 }
-
-

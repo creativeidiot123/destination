@@ -16,6 +16,9 @@ object FocusConfig {
     const val debugRecoveryPin: String = "7391"
     const val defaultTouchGrassUnlockThreshold: Int = 30
     const val defaultTouchGrassBreakMinutes: Int = 10
+    const val prototypeHiddenSuspendDialogEnabled: Boolean = true
+    const val prototypeHiddenSuspendDialogMessageTemplate: String =
+        "%1\$s is blocked by Destination. Go touch grass, this app isn't going anywhere."
 
     val protectedExactPackages: Set<String> = setOf("android")
 

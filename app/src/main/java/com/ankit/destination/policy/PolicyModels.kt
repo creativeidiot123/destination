@@ -89,6 +89,7 @@ data class DiagnosticsSnapshot(
     val scheduleBlockedGroups: Set<String>,
     val scheduleBlockedPackages: Set<String>,
     val scheduleLockReason: String?,
+    val scheduleTargetWarning: String?,
     val scheduleNextTransitionAtMs: Long?,
     val budgetBlockedPackages: Set<String>,
     val budgetBlockedGroupIds: Set<String>,
@@ -110,6 +111,9 @@ data class DiagnosticsSnapshot(
     val lastAppliedAtMs: Long,
     val lastVerificationPassed: Boolean,
     val lastError: String?,
+    val hiddenSuspendPrototypeEnabled: Boolean,
+    val packageSuspendBackend: String?,
+    val packageSuspendPrototypeError: String?,
     val lastSuspendedPackages: Set<String>,
     val restrictions: Map<String, Boolean>,
     val vpnActive: Boolean,
@@ -133,6 +137,24 @@ data class DiagnosticsSnapshot(
     val globalControls: GlobalControls,
     val primaryReasonByPackage: Map<String, String>,
     val packageDiagnostics: List<PackageDiagnostics>
+)
+
+data class DashboardSnapshot(
+    val deviceOwner: Boolean,
+    val usageAccessGranted: Boolean,
+    val accessibilityServiceEnabled: Boolean,
+    val accessibilityServiceRunning: Boolean,
+    val accessibilityDegradedReason: String?,
+    val usageAccessRecoveryLockdownActive: Boolean,
+    val usageAccessRecoveryReason: String?,
+    val scheduleBlockedGroupsCount: Int,
+    val scheduleStrictActive: Boolean,
+    val totalBlockedApps: Int,
+    val lastAppliedAtMs: Long,
+    val lastError: String?,
+    val nextPolicyWakeAtMs: Long?,
+    val nextPolicyWakeReason: String?,
+    val vpnActive: Boolean
 )
 
 enum class PackageDiagnosticsDisposition {

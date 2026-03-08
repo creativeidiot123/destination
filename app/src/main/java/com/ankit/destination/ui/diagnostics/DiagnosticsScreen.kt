@@ -1,5 +1,7 @@
 package com.ankit.destination.ui.diagnostics
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -40,6 +42,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -77,10 +80,11 @@ private enum class DangerConfirmAction {
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class, ExperimentalMaterial3Api::class)
 @Composable
-fun DiagnosticsScreen() {
+fun DiagnosticsScreen(
+    policyEngine: PolicyEngine,
+    appLockManager: AppLockManager
+) {
     val context = LocalContext.current
-    val policyEngine = remember(context) { PolicyEngine(context.applicationContext) }
-    val appLockManager = remember(context) { AppLockManager(context) }
     val viewModel: DiagnosticsViewModel = viewModel(
         factory = DiagnosticsViewModelFactory(
             context.applicationContext,
@@ -91,9 +95,19 @@ fun DiagnosticsScreen() {
     val uiState by viewModel.uiState.collectAsStateWithLifecycleCompat()
     var confirmAction by remember { mutableStateOf<DangerConfirmAction?>(null) }
     var showHiddenPicker by remember { mutableStateOf(false) }
+    val exportBackupLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        uri?.let(viewModel::exportBackup)
+    }
+    val importBackupLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        uri?.let(viewModel::importBackup)
+    }
 
     LaunchedEffect(Unit) {
-        viewModel.refresh()
+        viewModel.refresh(preserveStatusMessage = false)
     }
 
     if (uiState.showAuthDialog) {
@@ -194,7 +208,10 @@ fun DiagnosticsScreen() {
             TopAppBar(
                 title = { Text("Diagnostics") },
                 actions = {
-                    IconButton(onClick = { viewModel.refresh() }) {
+                    IconButton(
+                        onClick = { viewModel.refresh(preserveStatusMessage = false) },
+                        enabled = !uiState.isLoading
+                    ) {
                         Icon(Icons.Default.Refresh, contentDescription = "Refresh")
                     }
                 }
@@ -239,10 +256,34 @@ fun DiagnosticsScreen() {
                                 color = if (snapshot.lastError != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                             )
                             DiagnosticTile(
+                                icon = Icons.Default.Block,
+                                label = "Suspend backend",
+                                value = snapshot.packageSuspendBackend ?: "Unknown",
+                                color = when (snapshot.packageSuspendBackend) {
+                                    "HIDDEN" -> MaterialTheme.colorScheme.primary
+                                    "DPM_FALLBACK" -> MaterialTheme.colorScheme.tertiary
+                                    else -> MaterialTheme.colorScheme.secondary
+                                }
+                            )
+                            DiagnosticTile(
+                                icon = Icons.Default.Warning,
+                                label = "Suspend prototype",
+                                value = snapshot.packageSuspendPrototypeError ?: "No prototype error",
+                                color = if (snapshot.packageSuspendPrototypeError != null) {
+                                    MaterialTheme.colorScheme.error
+                                } else {
+                                    MaterialTheme.colorScheme.primary
+                                }
+                            )
+                            DiagnosticTile(
                                 icon = Icons.Default.Schedule,
                                 label = "Schedule",
-                                value = snapshot.scheduleLockReason ?: "Inactive",
-                                color = MaterialTheme.colorScheme.tertiary
+                                value = snapshot.scheduleTargetWarning ?: (snapshot.scheduleLockReason ?: "Inactive"),
+                                color = if (snapshot.scheduleTargetWarning != null) {
+                                    MaterialTheme.colorScheme.error
+                                } else {
+                                    MaterialTheme.colorScheme.tertiary
+                                }
                             )
                             DiagnosticTile(
                                 icon = Icons.Default.VpnKey,
@@ -462,6 +503,94 @@ fun DiagnosticsScreen() {
                                             Text("Remove")
                                         }
                                     }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                uiState.snapshot?.let { snapshot ->
+                    item {
+                        ElevatedCard(
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                            colors = CardDefaults.elevatedCardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                            )
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        "Suspend Prototype",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        if (snapshot.hiddenSuspendPrototypeEnabled) {
+                                            "Hidden API path is enabled. Suspensions try the custom dialog before DPM fallback."
+                                        } else {
+                                            "Hidden API path is disabled. Suspensions go directly to the stable DPM path."
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Switch(
+                                    checked = snapshot.hiddenSuspendPrototypeEnabled,
+                                    onCheckedChange = viewModel::setHiddenSuspendPrototypeEnabled,
+                                    enabled = !uiState.isLoading
+                                )
+                            }
+                        }
+                    }
+                }
+
+                item {
+                    ElevatedCard(
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                        colors = CardDefaults.elevatedCardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                        )
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text(
+                                "Backup & Restore",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                "Export or restore the full stored app state as a JSON file, including lists, mappings, per-app settings, network controls, and debug state.",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Button(
+                                    enabled = !uiState.isLoading,
+                                    onClick = {
+                                        exportBackupLauncher.launch(
+                                            "destination-backup-${System.currentTimeMillis()}.json"
+                                        )
+                                    }
+                                ) {
+                                    Text("Export backup")
+                                }
+                                Button(
+                                    enabled = !uiState.isLoading,
+                                    onClick = {
+                                        importBackupLauncher.launch(
+                                            arrayOf("application/json", "text/*")
+                                        )
+                                    }
+                                ) {
+                                    Text("Import backup")
                                 }
                             }
                         }

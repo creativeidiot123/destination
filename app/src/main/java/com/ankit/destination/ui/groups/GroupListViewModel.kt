@@ -14,7 +14,9 @@ import com.ankit.destination.data.GroupLimit
 import com.ankit.destination.policy.PolicyEngine
 import com.ankit.destination.security.AppLockManager
 import com.ankit.destination.ui.RefreshCoordinator
+import com.ankit.destination.ui.UiInvalidationBus
 import com.ankit.destination.ui.minuteToTimeLabel
+import com.ankit.destination.ui.runCatchingNonCancellation
 import com.ankit.destination.usage.UsageWindow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.BufferOverflow
@@ -76,6 +78,12 @@ class GroupListViewModel(
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
     val events = _events
+    private var hasLoadedOnce = false
+    private var lastHandledInvalidationVersion = UiInvalidationBus.latest.value.version
+
+    init {
+        refresh(force = true)
+    }
 
     fun refresh(force: Boolean = false) {
         if (!refreshCoordinator.tryStart(force)) return
@@ -86,111 +94,135 @@ class GroupListViewModel(
                 var loadSucceeded = false
                 try {
                     val previous = _uiState.value
-                    _uiState.update { it.copy(isLoading = true) }
+                    if (!hasLoadedOnce) {
+                        _uiState.update { it.copy(isLoading = true) }
+                    }
                     val refreshed = withContext(Dispatchers.IO) {
-                        val adminActive = appLockManager.isAdminSessionActive()
-                        val remainingMs = appLockManager.getSessionRemainingMs()
-                        val snapshot = policyEngine.diagnosticsSnapshot()
-                        val budgetDao = db.budgetDao()
-                        val scheduleDao = db.scheduleDao()
-                        val now = ZonedDateTime.now()
-                        val nowMs = now.toInstant().toEpochMilli()
-                        val dayKey = UsageWindow.dayKey(now)
-                        val limits = budgetDao.getAllGroupLimits()
-                        val emergencyConfigs = budgetDao.getAllGroupEmergencyConfigs().associateBy { it.groupId }
-                        val packagesByGroup = budgetDao.getAllMappings()
-                            .groupBy({ it.groupId }, { it.packageName })
-                        val schedulesByGroup = limits.associate { limit ->
-                            limit.groupId to scheduleDao.getBlocksForGroup(limit.groupId).firstOrNull()
-                        }
-                        budgetDao.clearExpiredEmergencyStateBefore(dayKey, nowMs)
-                        val mergedEmergencyStates = EmergencyStateMerger.merge(
-                            dayKey = dayKey,
-                            nowMs = nowMs,
-                            rows = budgetDao
-                                .getCurrentOrActiveEmergencyStates(dayKey, nowMs)
-                                .asSequence()
-                                .filter { it.targetType == EmergencyTargetType.GROUP.name }
-                                .toList()
-                        )
-                        val emergencyStates = mergedEmergencyStates.associateBy { it.targetId }
+                        runCatchingNonCancellation {
+                            val adminActive = appLockManager.isAdminSessionActive()
+                            val remainingMs = appLockManager.getSessionRemainingMs()
+                            val snapshot = policyEngine.uiSnapshot()
+                            val budgetDao = db.budgetDao()
+                            val scheduleDao = db.scheduleDao()
+                            val now = ZonedDateTime.now()
+                            val nowMs = now.toInstant().toEpochMilli()
+                            val dayKey = UsageWindow.dayKey(now)
+                            val limits = budgetDao.getAllGroupLimits()
+                            val emergencyConfigs = budgetDao.getAllGroupEmergencyConfigs().associateBy { it.groupId }
+                            val packagesByGroup = budgetDao.getAllMappings()
+                                .groupBy({ it.groupId }, { it.packageName })
+                            val schedulesByGroup = limits.associate { limit ->
+                                limit.groupId to scheduleDao.getBlocksForGroup(limit.groupId).firstOrNull()
+                            }
+                            budgetDao.clearExpiredEmergencyStateBefore(dayKey, nowMs)
+                            val mergedEmergencyStates = EmergencyStateMerger.merge(
+                                dayKey = dayKey,
+                                nowMs = nowMs,
+                                rows = budgetDao
+                                    .getCurrentOrActiveEmergencyStates(dayKey, nowMs)
+                                    .asSequence()
+                                    .filter { it.targetType == EmergencyTargetType.GROUP.name }
+                                    .toList()
+                            )
+                            val emergencyStates = mergedEmergencyStates.associateBy { it.targetId }
 
-                        GroupListUiState(
-                            groups = limits
-                                .sortedWith(compareBy<GroupLimit> { it.priorityIndex }.thenBy { it.name.lowercase() })
-                                .map { limit ->
-                                    val scheduleBlock = schedulesByGroup[limit.groupId]
-                                    val emergencyConfig = emergencyConfigs[limit.groupId]
-                                    val emergencyState = emergencyStates[limit.groupId]
-                                    val isEmergencyActive = (emergencyState?.activeUntilEpochMs ?: 0L) > nowMs
-                                    val scheduleBlocked = snapshot.scheduleBlockedGroups.contains(limit.groupId)
-                                    val budgetBlocked = snapshot.budgetBlockedGroupIds.contains(limit.groupId)
-                                    val emergencyUnlocksPerDay = clampEmergencyUnlocksPerDay(
-                                        emergencyConfig?.unlocksPerDay ?: 0
-                                    )
-                                    val emergencyMinutesPerUnlock = clampEmergencyMinutesPerUnlock(
-                                        emergencyConfig?.minutesPerUnlock ?: 0
-                                    )
-                                    val emergencyEnabled = emergencyConfig?.enabled == true &&
-                                        emergencyUnlocksPerDay > 0 &&
-                                        emergencyMinutesPerUnlock > 0
-                                    val emergencyRemainingUnlocks = (
-                                        emergencyUnlocksPerDay - (emergencyState?.unlocksUsedToday ?: 0)
-                                    ).coerceAtLeast(0)
+                            GroupListUiState(
+                                groups = limits
+                                    .sortedWith(compareBy<GroupLimit> { it.priorityIndex }.thenBy { it.name.lowercase() })
+                                    .map { limit ->
+                                        val scheduleBlock = schedulesByGroup[limit.groupId]
+                                        val emergencyConfig = emergencyConfigs[limit.groupId]
+                                        val emergencyState = emergencyStates[limit.groupId]
+                                        val isEmergencyActive = (emergencyState?.activeUntilEpochMs ?: 0L) > nowMs
+                                        val scheduleBlocked = snapshot.scheduleBlockedGroups.contains(limit.groupId)
+                                        val budgetBlocked = snapshot.budgetBlockedGroupIds.contains(limit.groupId)
+                                        val emergencyUnlocksPerDay = clampEmergencyUnlocksPerDay(
+                                            emergencyConfig?.unlocksPerDay ?: 0
+                                        )
+                                        val emergencyMinutesPerUnlock = clampEmergencyMinutesPerUnlock(
+                                            emergencyConfig?.minutesPerUnlock ?: 0
+                                        )
+                                        val emergencyEnabled = emergencyConfig?.enabled == true &&
+                                            emergencyUnlocksPerDay > 0 &&
+                                            emergencyMinutesPerUnlock > 0
+                                        val emergencyRemainingUnlocks = (
+                                            emergencyUnlocksPerDay - (emergencyState?.unlocksUsedToday ?: 0)
+                                        ).coerceAtLeast(0)
                                     val baselineBlocked = scheduleBlocked || budgetBlocked
                                     val effectiveBlocked = baselineBlocked && !isEmergencyActive
                                     val reason = when {
                                         isEmergencyActive -> "Emergency unlock active"
+                                        scheduleBlocked && budgetBlocked ->
+                                            "Scheduled block active. Usage limit remains after the schedule ends."
                                         scheduleBlocked -> "Scheduled block active"
                                         budgetBlocked -> snapshot.budgetReason ?: "Usage limit reached"
                                         else -> null
                                     }
 
-                                    GroupCardState(
-                                        groupId = limit.groupId,
-                                        name = limit.name,
-                                        appCount = packagesByGroup[limit.groupId].orEmpty().distinct().size,
-                                        priorityIndex = limit.priorityIndex,
-                                        isBlocked = effectiveBlocked,
-                                        primaryReason = reason,
-                                        isStrictActive = limit.strictEnabled && scheduleBlocked,
-                                        isEmergencyActive = isEmergencyActive,
-                                        emergencyUntil = emergencyState?.activeUntilEpochMs?.let {
-                                            DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(it))
-                                        },
-                                        emergencyEnabled = emergencyEnabled,
-                                        emergencyRemainingUnlocks = emergencyRemainingUnlocks,
-                                        emergencyUnlocksPerDay = emergencyUnlocksPerDay,
-                                        emergencyMinutesPerUnlock = emergencyMinutesPerUnlock,
-                                        effectiveBlocked = effectiveBlocked,
-                                        scheduleSummary = scheduleBlock?.let { block ->
-                                            val window =
-                                                "${daysMaskLabel(block.daysMask)} - ${minuteToTimeLabel(block.startMinute)}-${minuteToTimeLabel(block.endMinute)}"
-                                            if (block.enabled) {
-                                                "Active block - $window"
-                                            } else {
-                                                "Inactive block - $window"
-                                            }
-                                        } ?: "No schedule"
-                                    )
-                                },
-                            isLoading = false,
-                            adminSessionActive = adminActive,
-                            adminSessionRemainingMs = remainingMs
-                        )
+                                        GroupCardState(
+                                            groupId = limit.groupId,
+                                            name = limit.name,
+                                            appCount = packagesByGroup[limit.groupId].orEmpty().distinct().size,
+                                            priorityIndex = limit.priorityIndex,
+                                            isBlocked = effectiveBlocked,
+                                            primaryReason = reason,
+                                            isStrictActive = limit.strictEnabled && scheduleBlocked,
+                                            isEmergencyActive = isEmergencyActive,
+                                            emergencyUntil = emergencyState?.activeUntilEpochMs?.let {
+                                                DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(it))
+                                            },
+                                            emergencyEnabled = emergencyEnabled,
+                                            emergencyRemainingUnlocks = emergencyRemainingUnlocks,
+                                            emergencyUnlocksPerDay = emergencyUnlocksPerDay,
+                                            emergencyMinutesPerUnlock = emergencyMinutesPerUnlock,
+                                            effectiveBlocked = effectiveBlocked,
+                                            scheduleSummary = scheduleBlock?.let { block ->
+                                                val window =
+                                                    "${daysMaskLabel(block.daysMask)} - ${minuteToTimeLabel(block.startMinute)}-${minuteToTimeLabel(block.endMinute)}"
+                                                if (block.enabled) {
+                                                    "Active block - $window"
+                                                } else {
+                                                    "Inactive block - $window"
+                                                }
+                                            } ?: "No schedule"
+                                        )
+                                    },
+                                isLoading = false,
+                                adminSessionActive = adminActive,
+                                adminSessionRemainingMs = remainingMs
+                            )
+                        }
                     }
 
-                    _uiState.value = refreshed.copy(
-                        showAuthDialog = previous.showAuthDialog,
-                        pendingActionGroupId = previous.pendingActionGroupId,
-                        activatingEmergencyGroupId = previous.activatingEmergencyGroupId
-                    )
-                    loadSucceeded = true
+                    refreshed.onSuccess { state ->
+                        _uiState.value = state.copy(
+                            showAuthDialog = previous.showAuthDialog,
+                            pendingActionGroupId = previous.pendingActionGroupId,
+                            activatingEmergencyGroupId = previous.activatingEmergencyGroupId
+                        )
+                        hasLoadedOnce = true
+                        loadSucceeded = true
+                    }.onFailure { throwable ->
+                        _uiState.update {
+                            it.copy(
+                                isLoading = false,
+                                adminSessionActive = appLockManager.isAdminSessionActive(),
+                                adminSessionRemainingMs = appLockManager.getSessionRemainingMs()
+                            )
+                        }
+                        _events.tryEmit(GroupListEvent.Toast(throwable.message ?: "Failed to load groups."))
+                    }
                 } finally {
                     shouldRerun = refreshCoordinator.finish(loadSucceeded)
                 }
             } while (shouldRerun)
         }
+    }
+
+    fun onInvalidation(version: Long) {
+        if (version <= 0L || version <= lastHandledInvalidationVersion) return
+        lastHandledInvalidationVersion = version
+        refresh(force = true)
     }
 
     fun activateEmergency(groupId: String) {
@@ -199,7 +231,7 @@ class GroupListViewModel(
 
         viewModelScope.launch {
             _uiState.update { it.copy(activatingEmergencyGroupId = normalizedGroupId) }
-            val result = runCatching {
+            val result = runCatchingNonCancellation {
                 withContext(Dispatchers.IO) {
                     budgetOrchestrator.activateEmergencyUnlock(
                         targetType = EmergencyTargetType.GROUP,
@@ -223,9 +255,11 @@ class GroupListViewModel(
                 }
             }
 
-            result.onSuccess {
-                _events.emit(GroupListEvent.Toast(it.message))
-                refresh(force = true)
+            result.onSuccess { unlockResult ->
+                _events.emit(GroupListEvent.Toast(unlockResult.message))
+                if (unlockResult.success) {
+                    UiInvalidationBus.invalidate("group_emergency_activated")
+                }
             }.onFailure { throwable ->
                 _events.emit(GroupListEvent.Toast(throwable.message ?: "Failed to activate emergency unlock."))
             }

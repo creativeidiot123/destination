@@ -153,7 +153,7 @@ internal class PolicyApplier(
         val failedToSuspend: Set<String>
         val failedToUnsuspend: Set<String>
         if (toSuspend.isEmpty() && toUnsuspend.isEmpty()) {
-            FocusLog.d(FocusEventId.SUSPEND_TARGET, "suspension state unchanged; skipping DPM suspend calls")
+            FocusLog.d(FocusEventId.SUSPEND_TARGET, "suspension state unchanged; skipping package suspend pipeline")
             failedToSuspend = emptySet()
             failedToUnsuspend = emptySet()
         } else {

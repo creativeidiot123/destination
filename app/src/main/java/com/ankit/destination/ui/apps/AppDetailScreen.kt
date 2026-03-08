@@ -71,11 +71,11 @@ private enum class AppLimitDialogType {
 @Composable
 fun AppDetailScreen(
     packageName: String,
+    policyEngine: PolicyEngine,
+    appLockManager: AppLockManager,
     onBack: () -> Unit = {}
 ) {
     val context = LocalContext.current
-    val policyEngine = remember(context) { PolicyEngine(context.applicationContext) }
-    val appLockManager = remember(context) { AppLockManager(context) }
     val viewModel: AppDetailViewModel = viewModel(
         factory = AppDetailViewModelFactory(
             context.applicationContext,
@@ -87,10 +87,6 @@ fun AppDetailScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycleCompat()
     var activeDialog by remember { mutableStateOf<AppLimitDialogType?>(null) }
     val toast = remember(context) { { message: String -> context.showShortToast(message) } }
-
-    LaunchedEffect(Unit) {
-        viewModel.refresh()
-    }
 
     LaunchedEffect(viewModel) {
         viewModel.events.collectLatest { event ->
