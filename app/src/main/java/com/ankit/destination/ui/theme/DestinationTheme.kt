@@ -109,11 +109,21 @@ fun DestinationTheme(
         else -> LightColorScheme
     }
 
-    MaterialExpressiveTheme(
-        colorScheme = colorScheme,
-        motionScheme = AppMotionScheme,
-        shapes = AppShapes,
-        typography = AppTypography,
-        content = content
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val scaledDensity = androidx.compose.ui.unit.Density(
+        density = density.density,
+        fontScale = density.fontScale.coerceAtMost(1.2f)
     )
+
+    androidx.compose.runtime.CompositionLocalProvider(
+        androidx.compose.ui.platform.LocalDensity provides scaledDensity
+    ) {
+        MaterialExpressiveTheme(
+            colorScheme = colorScheme,
+            motionScheme = AppMotionScheme,
+            shapes = AppShapes,
+            typography = AppTypography,
+            content = content
+        )
+    }
 }

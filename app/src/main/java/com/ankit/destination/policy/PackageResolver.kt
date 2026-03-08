@@ -41,10 +41,7 @@ internal class PackageResolver(private val context: Context) : PackageResolverCl
         val warnings: List<String>
     )
 
-    override fun resolveAllowlist(
-        userChosenEmergencyApps: Set<String>,
-        alwaysAllowedApps: Set<String> = emptySet()
-    ): AllowlistResolution {
+    override fun resolveAllowlist(userChosenEmergencyApps: Set<String>, alwaysAllowedApps: Set<String>): AllowlistResolution {
         FocusLog.d(FocusEventId.ALLOWLIST_RESOLVE, "┌── resolveAllowlist() emergency=${userChosenEmergencyApps.size} alwaysAllowed=${alwaysAllowedApps.size}")
         val allowlist = linkedSetOf<String>()
         val reasons = linkedMapOf<String, String>()

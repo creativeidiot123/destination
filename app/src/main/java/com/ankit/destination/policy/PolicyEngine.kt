@@ -53,22 +53,6 @@ class PolicyEngine private constructor(
         alarmScheduler = AlarmScheduler(context.applicationContext)
     )
 
-    internal constructor(
-        context: Context,
-        clock: PolicyClock,
-        facade: DevicePolicyClient,
-        resolver: PackageResolverClient,
-        budgetClient: PolicyBudgetClient,
-        alarmScheduler: AlarmSchedulerClient
-    ) : this(
-        appContext = context.applicationContext,
-        clock = clock,
-        facade = facade,
-        resolver = resolver,
-        budgetClient = budgetClient,
-        alarmScheduler = alarmScheduler
-    )
-
     fun isDeviceOwner(): Boolean = facade.isDeviceOwner()
 
     fun getDesiredMode(): ModeState = store.getDesiredMode()
