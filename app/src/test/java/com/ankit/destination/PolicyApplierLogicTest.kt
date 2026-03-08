@@ -2,6 +2,8 @@ package com.ankit.destination
 
 import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
+import android.os.UserManager
+import android.provider.Settings
 import com.ankit.destination.data.GlobalControls
 import com.ankit.destination.policy.DevicePolicyClient
 import com.ankit.destination.policy.ManagedNetworkPolicy
@@ -106,9 +108,51 @@ class PolicyApplierLogicTest {
         assertEquals(" ", facade.deviceOwnerLockScreenInfo)
     }
 
+    @Test
+    fun apply_forwardsBlockReasonsToSuspendCall() {
+        val facade = FakeDevicePolicyClient()
+        val applier = PolicyApplier(facade)
+
+        val result = applier.apply(
+            state = policyState(
+                suspendTargets = setOf("a"),
+                previouslySuspended = emptySet(),
+                blockReasonsByPackage = mapOf(
+                    "a" to setOf("GROUP:focus_group:DAILY_CAP")
+                )
+            )
+        )
+
+        assertTrue(result.errors.isEmpty())
+        assertEquals(1, facade.suspendCalls.size)
+        assertEquals(
+            mapOf("a" to setOf("GROUP:focus_group:DAILY_CAP")),
+            facade.suspendCalls.first().blockReasonsByPackage
+        )
+    }
+
+    @Test
+    fun apply_turnsOffAdbWhenDeveloperRestrictionIsEnabled() {
+        val facade = FakeDevicePolicyClient()
+        val applier = PolicyApplier(facade)
+
+        val result = applier.apply(
+            state = policyState(
+                suspendTargets = emptySet(),
+                previouslySuspended = emptySet(),
+                restrictions = setOf(UserManager.DISALLOW_DEBUGGING_FEATURES)
+            )
+        )
+
+        assertTrue(result.errors.isEmpty())
+        assertEquals("0", facade.globalSettings[Settings.Global.ADB_ENABLED])
+    }
+
     private fun policyState(
         suspendTargets: Set<String>,
-        previouslySuspended: Set<String>
+        previouslySuspended: Set<String>,
+        blockReasonsByPackage: Map<String, Set<String>> = emptyMap(),
+        restrictions: Set<String> = emptySet()
     ): PolicyState {
         return PolicyState(
             mode = ModeState.NORMAL,
@@ -119,7 +163,7 @@ class PolicyApplierLogicTest {
             previouslySuspended = previouslySuspended,
             uninstallProtectedPackages = emptySet(),
             previouslyUninstallProtectedPackages = emptySet(),
-            restrictions = emptySet(),
+            restrictions = restrictions,
             enforceRestrictions = false,
             blockSelfUninstall = false,
             requireAutoTime = false,
@@ -131,20 +175,22 @@ class PolicyApplierLogicTest {
             budgetBlockedPackages = suspendTargets,
             touchGrassBreakActive = false,
             primaryReasonByPackage = emptyMap(),
-            blockReasonsByPackage = emptyMap(),
+            blockReasonsByPackage = blockReasonsByPackage,
             globalControls = GlobalControls()
         )
     }
 
     private data class SuspendCall(
         val packages: List<String>,
-        val suspended: Boolean
+        val suspended: Boolean,
+        val blockReasonsByPackage: Map<String, Set<String>> = emptyMap()
     )
 
     private class FakeDevicePolicyClient : DevicePolicyClient {
         override val adminComponent: ComponentName = ComponentName("test", "Admin")
         override val packageName: String = "com.ankit.destination"
         val suspendCalls = mutableListOf<SuspendCall>()
+        val globalSettings = linkedMapOf<String, String>()
         private val suspendedPackages = linkedSetOf<String>()
         private val uninstallBlockedPackages = linkedSetOf<String>()
         private var autoTimeRequired = false
@@ -175,8 +221,16 @@ class PolicyApplierLogicTest {
         override fun supportsGlobalPrivateDns(): Boolean = true
         override fun setGlobalPrivateDnsModeOpportunistic(): Int? = DevicePolicyManager.PRIVATE_DNS_MODE_OPPORTUNISTIC
         override fun setGlobalPrivateDnsModeSpecifiedHost(host: String): Int? = DevicePolicyManager.PRIVATE_DNS_MODE_PROVIDER_HOSTNAME
-        override fun setPackagesSuspended(packages: List<String>, suspended: Boolean): PackageSuspendResult {
-            suspendCalls += SuspendCall(packages = packages, suspended = suspended)
+        override fun setPackagesSuspended(
+            packages: List<String>,
+            suspended: Boolean,
+            blockReasonsByPackage: Map<String, Set<String>>
+        ): PackageSuspendResult {
+            suspendCalls += SuspendCall(
+                packages = packages,
+                suspended = suspended,
+                blockReasonsByPackage = blockReasonsByPackage
+            )
             if (suspended) {
                 suspendedPackages += packages
             } else {
@@ -197,6 +251,9 @@ class PolicyApplierLogicTest {
         override fun addUserRestriction(restriction: String) = Unit
         override fun clearUserRestriction(restriction: String) = Unit
         override fun hasUserRestriction(restriction: String): Boolean = false
+        override fun setGlobalSetting(setting: String, value: String) {
+            globalSettings[setting] = value
+        }
         override fun setAutoTimeRequired(required: Boolean) {
             autoTimeRequired = required
         }

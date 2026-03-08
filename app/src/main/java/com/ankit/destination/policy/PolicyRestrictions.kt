@@ -8,6 +8,16 @@ internal object PolicyRestrictions {
     const val NO_ADD_CLONE_PROFILE = "no_add_clone_profile"
     const val NO_ADD_PRIVATE_PROFILE = "no_add_private_profile"
 
+    private val standardManagedRestrictions = setOf(
+        UserManager.DISALLOW_CONFIG_VPN,
+        UserManager.DISALLOW_CONFIG_PRIVATE_DNS,
+        UserManager.DISALLOW_CONFIG_DATE_TIME,
+        UserManager.DISALLOW_DEBUGGING_FEATURES,
+        UserManager.DISALLOW_SAFE_BOOT,
+        UserManager.DISALLOW_ADD_USER,
+        UserManager.DISALLOW_ADD_MANAGED_PROFILE
+    )
+
     private val bestEffortRestrictions = setOf(
         NO_ADD_CLONE_PROFILE,
         NO_ADD_PRIVATE_PROFILE
@@ -18,6 +28,12 @@ internal object PolicyRestrictions {
         managedNetworkPolicy: ManagedNetworkPolicy = ManagedNetworkPolicy.Unmanaged,
         sdkInt: Int = Build.VERSION.SDK_INT
     ): Set<String> = buildSet {
+        if (globalControls.lockVpnDns) {
+            add(UserManager.DISALLOW_CONFIG_VPN)
+            if (isSupported(UserManager.DISALLOW_CONFIG_PRIVATE_DNS, sdkInt)) {
+                add(UserManager.DISALLOW_CONFIG_PRIVATE_DNS)
+            }
+        }
         when (managedNetworkPolicy) {
             is ManagedNetworkPolicy.ForcedVpn,
             is ManagedNetworkPolicy.ForcedPrivateDns -> {
@@ -58,10 +74,10 @@ internal object PolicyRestrictions {
         desiredRestrictions: Set<String>,
         sdkInt: Int = Build.VERSION.SDK_INT
     ): Set<String> = buildSet {
+        addAll(standardManagedRestrictions)
+        addAll(bestEffortRestrictions)
         addAll(desiredRestrictions)
-        bestEffortRestrictions
-            .filterTo(this) { isSupported(it, sdkInt) }
-    }
+    }.filterTo(linkedSetOf()) { isSupported(it, sdkInt) }
 
     private val bestEffortOnClearRestrictions = setOf(
         UserManager.DISALLOW_ADD_MANAGED_PROFILE,

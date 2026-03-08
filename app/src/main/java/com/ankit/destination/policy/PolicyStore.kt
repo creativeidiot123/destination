@@ -525,7 +525,7 @@ class PolicyStore(context: Context) {
                         }
                         value.filterIsInstance<String>().toSet()
                     }
-                    null -> ""
+                    null -> null
                     else -> error(
                         "Unsupported SharedPreferences type for key ${entry.key}: ${value::class.java.name}"
                     )

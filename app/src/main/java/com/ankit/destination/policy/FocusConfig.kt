@@ -17,8 +17,18 @@ object FocusConfig {
     const val defaultTouchGrassUnlockThreshold: Int = 30
     const val defaultTouchGrassBreakMinutes: Int = 10
     const val prototypeHiddenSuspendDialogEnabled: Boolean = true
+    const val prototypeHiddenSuspendDialogTitle: String =
+        "Go Touch Grass! Destination is Judging you!"
     const val prototypeHiddenSuspendDialogMessageTemplate: String =
-        "%1\$s is blocked by Destination. Go touch grass, this app isn't going anywhere."
+        "%1\$s Blocked, policy block is active"
+    const val prototypeHiddenSuspendScheduleMessageTemplate: String =
+        "%1\$s Blocked, schedule block is active"
+    const val prototypeHiddenSuspendHourlyMessageTemplate: String =
+        "%1\$s Blocked, Hourly limit reached"
+    const val prototypeHiddenSuspendDailyMessageTemplate: String =
+        "%1\$s Blocked, Daily limit reached"
+    const val prototypeHiddenSuspendOpensMessageTemplate: String =
+        "%1\$s Blocked, Daily opens limit reached"
 
     val protectedExactPackages: Set<String> = setOf("android")
 

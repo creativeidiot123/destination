@@ -1,14 +1,15 @@
 package com.ankit.destination.ui.components
 
-import android.widget.ImageView
+import androidx.compose.foundation.Image
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Android
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.viewinterop.AndroidView
 
 @Composable
 fun InstalledAppIcon(
@@ -17,33 +18,22 @@ fun InstalledAppIcon(
     contentDescription: String? = null
 ) {
     val context = LocalContext.current
-    val drawable = remember(context, packageName) {
-        runCatching {
-            val packageManager = context.packageManager
-            val appInfo = packageManager.getApplicationInfo(packageName, 0)
-            packageManager.getApplicationIcon(appInfo)
-        }.getOrNull()
+    val imageBitmap by produceState<ImageBitmap?>(initialValue = null, packageName) {
+        value = null
+        value = InstalledAppIconLoader.loadIcon(context, packageName)
     }
 
-    if (drawable == null) {
+    if (imageBitmap == null) {
         Icon(
             imageVector = Icons.Default.Android,
             contentDescription = contentDescription,
             modifier = modifier
         )
-        return
+    } else {
+        Image(
+            bitmap = imageBitmap!!,
+            contentDescription = contentDescription,
+            modifier = modifier
+        )
     }
-
-    AndroidView(
-        factory = { viewContext ->
-            ImageView(viewContext).apply {
-                scaleType = ImageView.ScaleType.CENTER_CROP
-            }
-        },
-        update = { imageView ->
-            imageView.setImageDrawable(drawable)
-            imageView.contentDescription = contentDescription
-        },
-        modifier = modifier
-    )
 }

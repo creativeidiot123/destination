@@ -139,6 +139,14 @@ class DiagnosticsViewModel(
             val result = withContext(Dispatchers.IO) {
                 runCatchingNonCancellation {
                     policyEngine.setHiddenSuspendPrototypeEnabled(enabled)
+                    PolicyApplyOrchestrator.applyNow(
+                        context = appContext,
+                        reason = if (enabled) {
+                            "diagnostics_hidden_suspend_enabled"
+                        } else {
+                            "diagnostics_hidden_suspend_disabled"
+                        }
+                    )
                 }
             }
             result.onSuccess {

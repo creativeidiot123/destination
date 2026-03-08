@@ -202,6 +202,18 @@ class AdminPolicyLogicTest {
     }
 
     @Test
+    fun globalControls_lockVpnDns_blocksVpnAndPrivateDnsWithoutForcedManagedMode() {
+        val restrictions = PolicyRestrictions.build(
+            globalControls = GlobalControls(lockVpnDns = true),
+            managedNetworkPolicy = ManagedNetworkPolicy.Unmanaged,
+            sdkInt = 34
+        )
+
+        assertTrue(restrictions.contains(android.os.UserManager.DISALLOW_CONFIG_VPN))
+        assertTrue(restrictions.contains(android.os.UserManager.DISALLOW_CONFIG_PRIVATE_DNS))
+    }
+
+    @Test
     fun usageAccessLockdownEligible_requiresDeviceOwnerAndSuccessfulEnrollmentOrLegacyApply() {
         assertTrue(
             PolicyEngine.isUsageAccessLockdownEligible(

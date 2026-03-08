@@ -37,7 +37,11 @@ internal interface DevicePolicyClient {
     fun supportsGlobalPrivateDns(): Boolean
     fun setGlobalPrivateDnsModeOpportunistic(): Int?
     fun setGlobalPrivateDnsModeSpecifiedHost(host: String): Int?
-    fun setPackagesSuspended(packages: List<String>, suspended: Boolean): PackageSuspendResult
+    fun setPackagesSuspended(
+        packages: List<String>,
+        suspended: Boolean,
+        blockReasonsByPackage: Map<String, Set<String>> = emptyMap()
+    ): PackageSuspendResult
     fun setUninstallBlocked(packageName: String, blocked: Boolean)
     fun isUninstallBlocked(packageName: String): Boolean
     fun supportsUserControlDisabledPackages(): Boolean
@@ -46,6 +50,7 @@ internal interface DevicePolicyClient {
     fun addUserRestriction(restriction: String)
     fun clearUserRestriction(restriction: String)
     fun hasUserRestriction(restriction: String): Boolean
+    fun setGlobalSetting(setting: String, value: String)
     fun setAutoTimeRequired(required: Boolean)
     fun isAutoTimeRequired(): Boolean
     fun canVerifyPackageSuspension(): Boolean
@@ -164,7 +169,11 @@ internal class DevicePolicyFacade(private val context: Context) : DevicePolicyCl
         }
     }
 
-    override fun setPackagesSuspended(packages: List<String>, suspended: Boolean): PackageSuspendResult {
+    override fun setPackagesSuspended(
+        packages: List<String>,
+        suspended: Boolean,
+        blockReasonsByPackage: Map<String, Set<String>>
+    ): PackageSuspendResult {
         if (packages.isEmpty()) {
             return PackageSuspendResult(
                 failedPackages = emptySet(),
@@ -176,9 +185,23 @@ internal class DevicePolicyFacade(private val context: Context) : DevicePolicyCl
         val errors = mutableListOf<String>()
         val backendStatuses = mutableListOf<PackageSuspendBackendStatus>()
         var hiddenPrototypeError: String? = null
-        val options = buildPackageSuspendCallOptions(suspended)
+        val hiddenPrototypeEnabled = policyStore.isHiddenSuspendPrototypeEnabled()
+        val normalizedReasonTokensByPackage = blockReasonsByPackage.asSequence()
+            .mapNotNull { (rawPackageName, rawReasons) ->
+                val packageName = rawPackageName.trim()
+                if (packageName.isBlank()) {
+                    null
+                } else {
+                    val cleanedReasons = rawReasons.asSequence()
+                        .map(String::trim)
+                        .filter(String::isNotBlank)
+                        .toSet()
+                    packageName to cleanedReasons
+                }
+            }
+            .toMap()
         val packageSuspendCoordinator = PackageSuspendCoordinator(
-            hiddenBackend = hiddenPackageSuspendBackend.takeIf { policyStore.isHiddenSuspendPrototypeEnabled() },
+            hiddenBackend = hiddenPackageSuspendBackend.takeIf { hiddenPrototypeEnabled },
             dpmBackend = dpmPackageSuspendBackend
         )
         packages.asSequence()
@@ -187,28 +210,46 @@ internal class DevicePolicyFacade(private val context: Context) : DevicePolicyCl
             .distinct()
             .chunked(SUSPEND_CHUNK_SIZE)
             .forEach { chunk ->
-                runCatching {
-                    packageSuspendCoordinator.setPackagesSuspended(chunk, options)
-                }.onSuccess { outcome ->
-                    failed += outcome.result.failedPackages
-                    backendStatuses += outcome.status.backend
-                    if (hiddenPrototypeError == null) {
-                        hiddenPrototypeError = outcome.status.hiddenErrorMessage
+                val groupedTargets: List<List<String>> =
+                    if (suspended && hiddenPrototypeEnabled && normalizedReasonTokensByPackage.isNotEmpty()) {
+                        chunk.map { packageName -> listOf(packageName) }
+                    } else {
+                        listOf(chunk)
                     }
-                    if (outcome.status.backend == PackageSuspendBackendStatus.HIDDEN) {
-                        FocusLog.d(
-                            FocusEventId.SUSPEND_TARGET,
-                            "Hidden suspend prototype used for ${chunk.size} packages suspended=$suspended"
-                        )
-                    } else if (outcome.status.backend == PackageSuspendBackendStatus.DPM_FALLBACK) {
-                        FocusLog.w(
-                            FocusEventId.SUSPEND_TARGET,
-                            "Hidden suspend prototype fell back to DPM: ${outcome.status.hiddenErrorMessage}"
-                        )
+
+                groupedTargets.forEach { targetPackages ->
+                    val reasonTokens = targetPackages.asSequence()
+                        .mapNotNull { packageName -> normalizedReasonTokensByPackage[packageName] }
+                        .firstOrNull()
+                        ?: emptySet()
+                    val reasonSummary = BlockReasonUtils.derivePrimaryReason(reasonTokens)
+                    val options = buildPackageSuspendCallOptions(
+                        suspended = suspended,
+                        reasonTokens = reasonTokens
+                    )
+                    runCatching {
+                        packageSuspendCoordinator.setPackagesSuspended(targetPackages, options)
+                    }.onSuccess { outcome ->
+                        failed += outcome.result.failedPackages
+                        backendStatuses += outcome.status.backend
+                        if (hiddenPrototypeError == null) {
+                            hiddenPrototypeError = outcome.status.hiddenErrorMessage
+                        }
+                        if (outcome.status.backend == PackageSuspendBackendStatus.HIDDEN) {
+                            FocusLog.d(
+                                FocusEventId.SUSPEND_TARGET,
+                                "Hidden suspend prototype used for ${targetPackages.size} packages suspended=$suspended reason=$reasonSummary"
+                            )
+                        } else if (outcome.status.backend == PackageSuspendBackendStatus.DPM_FALLBACK) {
+                            FocusLog.w(
+                                FocusEventId.SUSPEND_TARGET,
+                                "Hidden suspend prototype fell back to DPM: ${outcome.status.hiddenErrorMessage}"
+                            )
+                        }
+                    }.onFailure {
+                        failed += targetPackages
+                        errors += it.message ?: it.javaClass.simpleName
                     }
-                }.onFailure {
-                    failed += chunk
-                    errors += it.message ?: it.javaClass.simpleName
                 }
             }
         if (backendStatuses.isNotEmpty()) {
@@ -265,6 +306,10 @@ internal class DevicePolicyFacade(private val context: Context) : DevicePolicyCl
     }
 
     override fun hasUserRestriction(restriction: String): Boolean = userManager.hasUserRestriction(restriction)
+
+    override fun setGlobalSetting(setting: String, value: String) {
+        dpm.setGlobalSetting(adminComponent, setting, value)
+    }
 
     override fun setAutoTimeRequired(required: Boolean) {
         dpm.setAutoTimeRequired(adminComponent, required)

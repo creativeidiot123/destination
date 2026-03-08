@@ -5,6 +5,8 @@ import android.app.ActivityManager
 import android.app.admin.DevicePolicyManager
 import android.os.Build
 import android.os.Looper
+import android.os.UserManager
+import android.provider.Settings
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -103,6 +105,14 @@ internal class PolicyApplier(
             }
         }
 
+        if (desiredRestrictions.contains(UserManager.DISALLOW_DEBUGGING_FEATURES)) {
+            runCatching {
+                facade.setGlobalSetting(Settings.Global.ADB_ENABLED, "0")
+            }.onFailure {
+                errors += "setGlobalSetting(${Settings.Global.ADB_ENABLED}) failed: ${it.message}"
+            }
+        }
+
         runCatching { facade.setAutoTimeRequired(state.requireAutoTime) }
             .onFailure { errors += "setAutoTimeRequired failed: ${it.message}" }
 
@@ -158,9 +168,12 @@ internal class PolicyApplier(
             failedToUnsuspend = emptySet()
         } else {
             if (toSuspend.isNotEmpty()) {
+                val suspendReasons = state.blockReasonsByPackage
+                    .filterKeys { packageName -> packageName in toSuspend }
                 val suspendResult = facade.setPackagesSuspended(
                     packages = toSuspend.toList(),
-                    suspended = true
+                    suspended = true,
+                    blockReasonsByPackage = suspendReasons
                 )
                 failedToSuspend = suspendResult.failedPackages
                 suspendResult.errors.forEach { error ->

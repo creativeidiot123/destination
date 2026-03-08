@@ -8,6 +8,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -16,17 +17,17 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -36,15 +37,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -54,8 +51,8 @@ import com.ankit.destination.ui.UiInvalidationBus
 import com.ankit.destination.ui.components.AdminSessionBanner
 import com.ankit.destination.ui.components.AdminSessionDialog
 import com.ankit.destination.ui.components.InstalledAppIcon
+import com.ankit.destination.ui.components.SectionSurface
 import com.ankit.destination.ui.components.collectAsStateWithLifecycleCompat
-import com.ankit.destination.ui.components.showShortToast
 
 enum class AppFilter { All, Blocked, CustomRules }
 
@@ -76,9 +73,6 @@ fun IndividualAppsScreen(
     )
     val uiState by viewModel.uiState.collectAsStateWithLifecycleCompat()
     val invalidation by UiInvalidationBus.latest.collectAsStateWithLifecycleCompat()
-    var searchQuery by remember { mutableStateOf("") }
-    var selectedFilter by remember { mutableStateOf(AppFilter.All) }
-    val toast = remember(context) { { message: String -> context.showShortToast(message) } }
 
     LaunchedEffect(viewModel, invalidation.version) {
         viewModel.onInvalidation(invalidation.version)
@@ -96,95 +90,71 @@ fun IndividualAppsScreen(
         )
     }
 
-    Scaffold { innerPadding ->
-        val filteredApps by remember(uiState.apps, searchQuery, selectedFilter) {
-            derivedStateOf {
-                val normalizedQuery = searchQuery.trim()
-                uiState.apps.filter { app ->
-                    val matchesSearch = if (normalizedQuery.isBlank()) {
-                        true
-                    } else {
-                        app.label.contains(normalizedQuery, ignoreCase = true)
-                    }
-                    val matchesFilter = when (selectedFilter) {
-                        AppFilter.All -> true
-                        AppFilter.Blocked -> app.blockMessage != null
-                        AppFilter.CustomRules -> app.hasCustomRules
-                    }
-                    matchesSearch && matchesFilter
-                }
-            }
-        }
-        val totalUsageMinutes = remember(uiState.apps) {
-            (uiState.apps.sumOf { it.usageTimeMs } / 60_000L).toInt()
-        }
-        val customRulesCount = remember(uiState.apps) {
-            uiState.apps.count { it.hasCustomRules }
-        }
-
-        Column(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+        ) {
             AdminSessionBanner(remainingMs = uiState.adminSessionRemainingMs)
 
             LazyColumn(
-                modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(top = 24.dp, bottom = 80.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 80.dp)
             ) {
-                item {
-                    Text(
-                        text = "App Usage Rules",
-                        style = MaterialTheme.typography.displaySmall,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onBackground,
-                        modifier = Modifier.padding(bottom = 16.dp)
-                    )
-                    
-                    Surface(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(180.dp)
-                            .padding(bottom = 8.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        shape = MaterialTheme.shapes.extraLarge
+                item(contentType = "header") {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 16.dp, top = 24.dp)
                     ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text(
-                                    text = customRulesCount.toString(),
-                                    style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                                Spacer(modifier = Modifier.height(16.dp))
-                                Text("Apps have custom rules", style = MaterialTheme.typography.labelMedium)
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        text = "$totalUsageMinutes mins",
-                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-                                        color = MaterialTheme.colorScheme.primary
-                                    )
-                                    Text(" minutes tracked today", style = MaterialTheme.typography.bodySmall)
-                                }
-                            }
+                        Text(
+                            text = "App Usage",
+                            style = MaterialTheme.typography.displaySmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        SectionSurface(
+                            modifier = Modifier.fillMaxWidth(),
+                            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                        ) {
+                            Text(
+                                text = "${uiState.customRulesCount} custom rules",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "${uiState.totalUsageMinutes} mins tracked today",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.primary
+                            )
                         }
+                        Spacer(modifier = Modifier.height(24.dp))
                     }
                 }
 
-                item {
-                    Column(modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
+                item(contentType = "search_filter") {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, bottom = 16.dp)
+                    ) {
                         OutlinedTextField(
-                            value = searchQuery,
-                            onValueChange = { searchQuery = it },
+                            value = uiState.searchQuery,
+                            onValueChange = viewModel::updateSearchQuery,
                             modifier = Modifier.fillMaxWidth(),
                             placeholder = { Text("Search apps...") },
                             leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                             trailingIcon = {
                                 AnimatedVisibility(
-                                    visible = searchQuery.isNotEmpty(),
+                                    visible = uiState.searchQuery.isNotEmpty(),
                                     enter = fadeIn(),
                                     exit = fadeOut()
                                 ) {
-                                    IconButton(onClick = { searchQuery = "" }) {
+                                    IconButton(onClick = { viewModel.updateSearchQuery("") }) {
                                         Icon(Icons.Default.Clear, contentDescription = "Clear search")
                                     }
                                 }
@@ -198,63 +168,58 @@ fun IndividualAppsScreen(
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             FilterChip(
-                                selected = selectedFilter == AppFilter.All,
-                                onClick = {
-                                    selectedFilter = AppFilter.All
-                                    toast("Showing all apps.")
-                                },
+                                selected = uiState.selectedFilter == AppFilter.All,
+                                onClick = { viewModel.updateFilter(AppFilter.All) },
                                 label = { Text("All") }
                             )
                             FilterChip(
-                                selected = selectedFilter == AppFilter.Blocked,
-                                onClick = {
-                                    selectedFilter = AppFilter.Blocked
-                                    toast("Showing blocked apps.")
-                                },
+                                selected = uiState.selectedFilter == AppFilter.Blocked,
+                                onClick = { viewModel.updateFilter(AppFilter.Blocked) },
                                 label = { Text("Blocked") }
                             )
                             FilterChip(
-                                selected = selectedFilter == AppFilter.CustomRules,
-                                onClick = {
-                                    selectedFilter = AppFilter.CustomRules
-                                    toast("Showing apps with custom rules.")
-                                },
-                                label = { Text("Custom Rules") }
+                                selected = uiState.selectedFilter == AppFilter.CustomRules,
+                                onClick = { viewModel.updateFilter(AppFilter.CustomRules) },
+                                label = { Text("Rules") }
                             )
                         }
                     }
                 }
 
-                items(filteredApps, key = { it.packageName }) { app ->
-
-                    ElevatedCard(
+                itemsIndexed(
+                    items = uiState.filteredApps,
+                    key = { _, item -> item.packageName },
+                    contentType = { _, _ -> "app_row" }
+                ) { index, app ->
+                    Surface(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable {
-                                toast("Opening ${app.label}.")
                                 viewModel.attemptEditApp(app.packageName) { onNavigateToAppDetail(it) }
                             },
-                        shape = MaterialTheme.shapes.large,
-                        colors = androidx.compose.material3.CardDefaults.elevatedCardColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
-                        )
+                        color = MaterialTheme.colorScheme.background
                     ) {
-                        Column(modifier = Modifier.padding(20.dp)) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+                        ) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                Row(
+                                    modifier = Modifier.weight(1f),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
                                     Box(
                                         modifier = Modifier
-                                            .size(52.dp)
+                                            .size(48.dp)
                                             .clip(CircleShape)
                                             .background(
                                                 color = if (app.blockMessage != null) {
                                                     MaterialTheme.colorScheme.errorContainer
                                                 } else {
-                                                    MaterialTheme.colorScheme.primaryContainer
+                                                    MaterialTheme.colorScheme.surfaceContainerLow
                                                 },
                                                 shape = CircleShape
                                             ),
@@ -268,63 +233,95 @@ fun IndividualAppsScreen(
                                     }
                                     Spacer(modifier = Modifier.width(16.dp))
                                     Column {
-                                        Text(app.label, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                                        Text(
+                                            text = app.label,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.onBackground
+                                        )
                                         Row(verticalAlignment = Alignment.CenterVertically) {
                                             Text(
-                                                text = "${app.usageTimeMs / 60000} mins",
-                                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-                                                color = if (app.blockMessage != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                                                text = "${app.usageTimeMs / 60000}m",
+                                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                                                color = if (app.blockMessage != null) {
+                                                    MaterialTheme.colorScheme.error
+                                                } else {
+                                                    MaterialTheme.colorScheme.primary
+                                                }
                                             )
                                             Text(
-                                                " | ${app.opensToday} opens",
+                                                text = " | ${app.opensToday} opens",
                                                 style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                color = MaterialTheme.colorScheme.outline
                                             )
                                         }
                                     }
                                 }
-                                
+
                                 if (app.hasCustomRules) {
                                     Icon(
                                         imageVector = Icons.Default.Info,
-                                        contentDescription = "Custom Rules Active",
+                                        contentDescription = "Custom rules active",
                                         tint = MaterialTheme.colorScheme.secondary,
-                                        modifier = Modifier.size(20.dp)
+                                        modifier = Modifier
+                                            .size(20.dp)
+                                            .padding(start = 8.dp)
                                     )
                                 }
                             }
-                            
+
                             app.blockMessage?.let { blockMessage ->
-                                Spacer(modifier = Modifier.height(12.dp))
-                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(
+                                    modifier = Modifier.padding(start = 64.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
                                     Icon(
                                         imageVector = Icons.Default.Warning,
                                         contentDescription = null,
                                         tint = MaterialTheme.colorScheme.error,
-                                        modifier = Modifier.size(16.dp)
+                                        modifier = Modifier.size(14.dp)
                                     )
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Text(
-                                        blockMessage,
-                                        style = MaterialTheme.typography.labelSmall,
+                                        text = blockMessage,
+                                        style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.error,
                                         fontWeight = FontWeight.Medium
                                     )
                                 }
                             }
+
+                            if (index < uiState.filteredApps.lastIndex) {
+                                HorizontalDivider(
+                                    modifier = Modifier.padding(start = 64.dp, top = 12.dp),
+                                    color = MaterialTheme.colorScheme.outlineVariant
+                                )
+                            }
                         }
                     }
                 }
-                
-                if (filteredApps.isEmpty()) {
-                    item {
+
+                if (uiState.filteredApps.isEmpty() && !uiState.isLoading) {
+                    item(contentType = "empty_state") {
                         Column(
-                            modifier = Modifier.fillMaxWidth().padding(48.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(48.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
-                            Spacer(Modifier.height(16.dp))
-                            Text("No apps matching filter", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Icon(
+                                imageVector = Icons.Default.Search,
+                                contentDescription = null,
+                                modifier = Modifier.size(48.dp),
+                                tint = MaterialTheme.colorScheme.outlineVariant
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                text = "No apps found",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.outline
+                            )
                         }
                     }
                 }
