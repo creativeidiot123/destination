@@ -90,7 +90,6 @@ class AdminPolicyLogicTest {
     @Test
     fun globalControls_skipUnsupportedRestrictionsOnOlderSdk() {
         val restrictions = PolicyRestrictions.build(
-            mode = ModeState.NORMAL,
             globalControls = GlobalControls(
                 lockTime = true,
                 lockWorkProfile = true,
@@ -108,12 +107,10 @@ class AdminPolicyLogicTest {
     @Test
     fun globalControls_includeBestEffortRestrictionsOnlyWhenSupported() {
         val cloneOnly = PolicyRestrictions.build(
-            mode = ModeState.NORMAL,
             globalControls = GlobalControls(lockCloningBestEffort = true),
             sdkInt = 34
         )
         val cloneAndPrivate = PolicyRestrictions.build(
-            mode = ModeState.NORMAL,
             globalControls = GlobalControls(lockCloningBestEffort = true),
             sdkInt = 35
         )
@@ -127,12 +124,10 @@ class AdminPolicyLogicTest {
     @Test
     fun globalControls_includeSafeBootRestriction_onlyWhenSupported() {
         val unsupported = PolicyRestrictions.build(
-            mode = ModeState.NORMAL,
             globalControls = GlobalControls(disableSafeMode = true),
             sdkInt = 25
         )
         val supported = PolicyRestrictions.build(
-            mode = ModeState.NORMAL,
             globalControls = GlobalControls(disableSafeMode = true),
             sdkInt = 26
         )
@@ -187,7 +182,6 @@ class AdminPolicyLogicTest {
     @Test
     fun managedNetworkRestrictions_blockVpnAndPrivateDnsInForcedModes() {
         val forcedVpn = PolicyRestrictions.build(
-            mode = ModeState.NORMAL,
             globalControls = GlobalControls(),
             managedNetworkPolicy = ManagedNetworkPolicy.ForcedVpn(
                 packageName = "com.example.vpn",
@@ -196,7 +190,6 @@ class AdminPolicyLogicTest {
             sdkInt = 34
         )
         val forcedDns = PolicyRestrictions.build(
-            mode = ModeState.NORMAL,
             globalControls = GlobalControls(),
             managedNetworkPolicy = ManagedNetworkPolicy.ForcedPrivateDns("dns.example.com"),
             sdkInt = 34

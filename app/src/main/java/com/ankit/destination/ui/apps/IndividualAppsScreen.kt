@@ -35,6 +35,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -111,18 +112,36 @@ fun IndividualAppsScreen(
     }
 
     Scaffold { innerPadding ->
+        val filteredApps by remember(uiState.apps, searchQuery, selectedFilter) {
+            derivedStateOf {
+                val normalizedQuery = searchQuery.trim()
+                uiState.apps.filter { app ->
+                    val matchesSearch = if (normalizedQuery.isBlank()) {
+                        true
+                    } else {
+                        app.label.contains(normalizedQuery, ignoreCase = true)
+                    }
+                    val matchesFilter = when (selectedFilter) {
+                        AppFilter.All -> true
+                        AppFilter.Blocked -> app.blockMessage != null
+                        AppFilter.CustomRules -> app.hasCustomRules
+                    }
+                    matchesSearch && matchesFilter
+                }
+            }
+        }
+        val totalUsageMinutes = remember(uiState.apps) {
+            (uiState.apps.sumOf { it.usageTimeMs } / 60_000L).toInt()
+        }
+        val customRulesCount = remember(uiState.apps) {
+            uiState.apps.count { it.hasCustomRules }
+        }
+        val maxUsage = remember(filteredApps) {
+            (filteredApps.maxOfOrNull { it.usageTimeMs } ?: 0L).coerceAtLeast(1L)
+        }
+
         Column(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
             AdminSessionBanner(remainingMs = uiState.adminSessionRemainingMs)
-
-            val filteredApps = uiState.apps.filter { app ->
-                val matchesSearch = if (searchQuery.isBlank()) true else app.label.contains(searchQuery, ignoreCase = true)
-                val matchesFilter = when (selectedFilter) {
-                    AppFilter.All -> true
-                    AppFilter.Blocked -> app.blockMessage != null
-                    AppFilter.CustomRules -> app.hasCustomRules
-                }
-                matchesSearch && matchesFilter
-            }
 
             LazyColumn(
                 modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
@@ -130,8 +149,6 @@ fun IndividualAppsScreen(
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 item {
-                    val totalUsageMinutes = uiState.apps.sumOf { it.usageTimeMs } / 60_000
-                    val customRulesCount = uiState.apps.count { it.hasCustomRules }
                     Text(
                         text = "App Usage Rules",
                         style = MaterialTheme.typography.displaySmall,
@@ -235,7 +252,6 @@ fun IndividualAppsScreen(
                 }
 
                 items(filteredApps, key = { it.packageName }) { app ->
-                    val maxUsage = (filteredApps.maxOfOrNull { it.usageTimeMs } ?: 0L).coerceAtLeast(1L)
                     val interactionSource = remember { MutableInteractionSource() }
 
                     ElevatedCard(

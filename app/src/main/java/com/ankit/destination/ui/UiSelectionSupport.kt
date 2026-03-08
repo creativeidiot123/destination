@@ -2,7 +2,6 @@ package com.ankit.destination.ui
 
 import android.app.TimePickerDialog
 import android.content.Context
-import android.content.pm.PackageManager
 import android.text.InputType
 import android.view.View
 import android.view.ViewGroup
@@ -41,33 +40,53 @@ suspend fun loadInstalledAppOptions(
     disabledPackageReasons: Map<String, String> = emptyMap()
 ): List<AppOption> = withContext(Dispatchers.IO) {
     val packageManager = context.packageManager
-    val packages = linkedSetOf<String>()
-    if (launchableOnly) {
-        val launchIntent = packageManager.getLaunchIntentForPackage(context.packageName)
-        if (launchIntent != null) {
-            packages += context.packageName
-        }
-        val intent = android.content.Intent(android.content.Intent.ACTION_MAIN)
-            .addCategory(android.content.Intent.CATEGORY_LAUNCHER)
-        packageManager.queryIntentActivities(intent, PackageManager.MATCH_ALL)
-            .mapTo(packages) { it.activityInfo.packageName }
-    } else {
-        packageManager.getInstalledApplications(PackageManager.MATCH_ALL)
-            .mapTo(packages) { it.packageName }
-    }
-    packages += includePackageNames.filter { it.isNotBlank() }
-
-    packages
+    val catalogEntries = SharedInstalledAppCatalogCache.getCatalog(
+        context = context,
+        launchableOnly = launchableOnly
+    )
+    val cachedPackageNames = catalogEntries.asSequence()
+        .map(InstalledAppCatalogEntry::packageName)
+        .toHashSet()
+    val includedEntries = includePackageNames
+        .asSequence()
+        .map(String::trim)
+        .filter(String::isNotBlank)
+        .filterNot(cachedPackageNames::contains)
         .map { packageName ->
-            val label = runCatching {
-                val appInfo = packageManager.getApplicationInfo(packageName, 0)
-                packageManager.getApplicationLabel(appInfo).toString()
-            }.getOrDefault(packageName)
+            resolveInstalledAppCatalogEntry(
+                packageManager = packageManager,
+                packageName = packageName
+            )
+        }
+        .toList()
+
+    buildAppOptions(
+        catalogEntries = catalogEntries,
+        includedEntries = includedEntries,
+        disabledPackageReasons = disabledPackageReasons
+    )
+}
+
+internal fun buildAppOptions(
+    catalogEntries: List<InstalledAppCatalogEntry>,
+    includedEntries: List<InstalledAppCatalogEntry>,
+    disabledPackageReasons: Map<String, String>
+): List<AppOption> {
+    val mergedEntries = linkedMapOf<String, InstalledAppCatalogEntry>()
+    catalogEntries.forEach { entry ->
+        mergedEntries[entry.packageName] = entry
+    }
+    includedEntries.forEach { entry ->
+        mergedEntries[entry.packageName] = entry
+    }
+
+    return mergedEntries.values
+        .map { entry ->
             AppOption(
-                packageName = packageName,
-                label = label,
-                isSelectable = !disabledPackageReasons.containsKey(packageName),
-                supportingTag = disabledPackageReasons[packageName]
+                packageName = entry.packageName,
+                label = entry.label,
+                isSelectable = !disabledPackageReasons.containsKey(entry.packageName),
+                supportingTag = disabledPackageReasons[entry.packageName]
             )
         }
         .sortedWith(compareBy<AppOption> { it.label.lowercase(Locale.getDefault()) }.thenBy { it.packageName })

@@ -35,6 +35,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -91,6 +92,14 @@ fun AppRulesScreen() {
         "Uninstall Protection" to AppRuleCategory.UNINSTALL_PROTECTION
     )
     val selectedCategory = tabs[selectedTabIndex].second
+    val displayRules by remember(uiState.rules, selectedCategory, context.packageName) {
+        derivedStateOf {
+            uiState.rules.filter { rule ->
+                rule.belongsTo(selectedCategory) &&
+                    !(selectedCategory == AppRuleCategory.UNINSTALL_PROTECTION && rule.packageName == context.packageName)
+            }
+        }
+    }
 
     if (showPicker) {
         val disabledReasons = when (selectedCategory) {
@@ -216,11 +225,6 @@ fun AppRulesScreen() {
                             )
                         }
                     }
-                }
-
-                val displayRules = uiState.rules.filter { rule ->
-                    rule.belongsTo(selectedCategory) &&
-                        !(selectedCategory == AppRuleCategory.UNINSTALL_PROTECTION && rule.packageName == context.packageName)
                 }
 
                 if (displayRules.isEmpty()) {

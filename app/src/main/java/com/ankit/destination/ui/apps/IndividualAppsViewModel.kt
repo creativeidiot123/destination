@@ -8,6 +8,7 @@ import com.ankit.destination.data.FocusDatabase
 import com.ankit.destination.policy.EffectiveBlockReason
 import com.ankit.destination.policy.PolicyEngine
 import com.ankit.destination.security.AppLockManager
+import com.ankit.destination.ui.RefreshCoordinator
 import com.ankit.destination.ui.loadInstalledAppOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -42,60 +43,72 @@ class IndividualAppsViewModel(
 ) : ViewModel() {
     private val db by lazy { FocusDatabase.get(appContext) }
     private val budgetOrchestrator by lazy { BudgetOrchestrator(appContext) }
+    private val refreshCoordinator = RefreshCoordinator()
     private val _uiState = MutableStateFlow(IndividualAppsUiState())
     val uiState: StateFlow<IndividualAppsUiState> = _uiState.asStateFlow()
 
-    fun refresh() {
-        viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true) }
-            val refreshed = withContext(Dispatchers.IO) {
-                val adminActive = appLockManager.isAdminSessionActive()
-                val remainingMs = appLockManager.getSessionRemainingMs()
-                val snapshot = policyEngine.diagnosticsSnapshot()
-                val appPolicies = db.budgetDao().getAllAppPolicies().associateBy { it.packageName }
-                val usageInputs = budgetOrchestrator.readUsageSnapshot().usageInputs
-                val launchableApps = loadInstalledAppOptions(
-                    context = appContext,
-                    includePackageNames = appPolicies.keys
-                )
-                IndividualAppsUiState(
-                    apps = launchableApps
-                        .map { option ->
-                            val policy = appPolicies[option.packageName]
-                            val usedToday = usageInputs.usedTodayMs[option.packageName] ?: 0L
-                            val opensToday = usageInputs.opensToday[option.packageName] ?: 0
-                            val rawReason = snapshot.primaryReasonByPackage[option.packageName]
-                            val customRules = policy != null && (
-                                policy.dailyLimitMs > 0L ||
-                                    policy.hourlyLimitMs > 0L ||
-                                    policy.opensPerDay > 0 ||
-                                    policy.emergencyEnabled
-                                )
-                            AppUsageItem(
-                                packageName = option.packageName,
-                                label = option.label,
-                                usageTimeMs = usedToday,
-                                blockMessage = blockMessageFor(
-                                    rawReason = rawReason,
-                                    blocked = rawReason != null || snapshot.budgetBlockedPackages.contains(option.packageName)
-                                ),
-                                hasCustomRules = customRules,
-                                opensToday = opensToday
-                            )
-                        }
-                        .sortedWith(
-                            compareByDescending<AppUsageItem> { it.hasCustomRules }
-                                .thenByDescending { it.blockMessage != null }
-                                .thenByDescending { it.usageTimeMs }
-                                .thenBy { it.label.lowercase() }
-                        ),
-                    isLoading = false,
-                    adminSessionActive = adminActive,
-                    adminSessionRemainingMs = remainingMs
-                )
-            }
+    fun refresh(force: Boolean = false) {
+        if (!refreshCoordinator.tryStart(force)) return
 
-            _uiState.value = refreshed
+        viewModelScope.launch {
+            var shouldRerun: Boolean
+            do {
+                var loadSucceeded = false
+                try {
+                    _uiState.update { it.copy(isLoading = true) }
+                    val refreshed = withContext(Dispatchers.IO) {
+                        val adminActive = appLockManager.isAdminSessionActive()
+                        val remainingMs = appLockManager.getSessionRemainingMs()
+                        val snapshot = policyEngine.diagnosticsSnapshot()
+                        val appPolicies = db.budgetDao().getAllAppPolicies().associateBy { it.packageName }
+                        val usageInputs = budgetOrchestrator.readUsageSnapshot().usageInputs
+                        val launchableApps = loadInstalledAppOptions(
+                            context = appContext,
+                            includePackageNames = appPolicies.keys
+                        )
+                        IndividualAppsUiState(
+                            apps = launchableApps
+                                .map { option ->
+                                    val policy = appPolicies[option.packageName]
+                                    val usedToday = usageInputs.usedTodayMs[option.packageName] ?: 0L
+                                    val opensToday = usageInputs.opensToday[option.packageName] ?: 0
+                                    val rawReason = snapshot.primaryReasonByPackage[option.packageName]
+                                    val customRules = policy != null && (
+                                        policy.dailyLimitMs > 0L ||
+                                            policy.hourlyLimitMs > 0L ||
+                                            policy.opensPerDay > 0 ||
+                                            policy.emergencyEnabled
+                                        )
+                                    AppUsageItem(
+                                        packageName = option.packageName,
+                                        label = option.label,
+                                        usageTimeMs = usedToday,
+                                        blockMessage = blockMessageFor(
+                                            rawReason = rawReason,
+                                            blocked = rawReason != null || snapshot.budgetBlockedPackages.contains(option.packageName)
+                                        ),
+                                        hasCustomRules = customRules,
+                                        opensToday = opensToday
+                                    )
+                                }
+                                .sortedWith(
+                                    compareByDescending<AppUsageItem> { it.hasCustomRules }
+                                        .thenByDescending { it.blockMessage != null }
+                                        .thenByDescending { it.usageTimeMs }
+                                        .thenBy { it.label.lowercase() }
+                                ),
+                            isLoading = false,
+                            adminSessionActive = adminActive,
+                            adminSessionRemainingMs = remainingMs
+                        )
+                    }
+
+                    _uiState.value = refreshed
+                    loadSucceeded = true
+                } finally {
+                    shouldRerun = refreshCoordinator.finish(loadSucceeded)
+                }
+            } while (shouldRerun)
         }
     }
 
@@ -114,7 +127,7 @@ class IndividualAppsViewModel(
     fun onAuthenticated(navigate: (String) -> Unit) {
         val pendingPkg = _uiState.value.pendingActionPkg
         dismissAuthDialog()
-        refresh()
+        refresh(force = true)
         if (pendingPkg != null) {
             navigate(pendingPkg)
         }

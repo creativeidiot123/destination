@@ -11,6 +11,7 @@ import com.ankit.destination.policy.FocusEventId
 import com.ankit.destination.policy.FocusLog
 import com.ankit.destination.policy.PackageResolver
 import com.ankit.destination.policy.PolicyEngine
+import com.ankit.destination.ui.invalidateInstalledAppOptionsCache
 
 
 class PackageChangeReceiver : BroadcastReceiver() {
@@ -31,6 +32,7 @@ class PackageChangeReceiver : BroadcastReceiver() {
                 runCatching {
                     val filter = IntentFilter().apply {
                         addAction(Intent.ACTION_PACKAGE_ADDED)
+                        addAction(Intent.ACTION_PACKAGE_REMOVED)
                         addAction(Intent.ACTION_PACKAGE_REPLACED)
                         addDataScheme("package")
                     }
@@ -80,9 +82,19 @@ class PackageChangeReceiver : BroadcastReceiver() {
             FocusLog.v(FocusEventId.PACKAGE_INSTALL_DETECT, "PackageChangeReceiver: IGNORED add+replacing pkg=$packageName")
             return
         }
-        if (action != Intent.ACTION_PACKAGE_ADDED && action != Intent.ACTION_PACKAGE_REPLACED) {
+        if (action == Intent.ACTION_PACKAGE_REMOVED && replacing) {
+            FocusLog.v(FocusEventId.PACKAGE_INSTALL_DETECT, "PackageChangeReceiver: IGNORED remove+replacing pkg=$packageName")
             return
         }
+        if (
+            action != Intent.ACTION_PACKAGE_ADDED &&
+            action != Intent.ACTION_PACKAGE_REMOVED &&
+            action != Intent.ACTION_PACKAGE_REPLACED
+        ) {
+            return
+        }
+
+        invalidateInstalledAppOptionsCache()
 
         val pending = goAsync()
         synchronized(pendingEvents) {
@@ -133,6 +145,9 @@ class PackageChangeReceiver : BroadcastReceiver() {
 
                 eventsToProcess.forEach { event ->
                     val changedPackage = event.packageName
+                    if (event.action == Intent.ACTION_PACKAGE_REMOVED) {
+                        return@forEach
+                    }
                     if (changedPackage == managedVpnPackage) {
                         shouldEnforce = true
                         return@forEach

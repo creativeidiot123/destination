@@ -44,6 +44,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -140,23 +141,27 @@ fun GroupListScreen(
             }
         }
     ) { innerPadding ->
+        val filteredGroups by remember(uiState.groups, searchQuery, selectedFilter) {
+            derivedStateOf {
+                val normalizedQuery = searchQuery.trim()
+                uiState.groups.filter { group ->
+                    val matchesSearch = if (normalizedQuery.isBlank()) {
+                        true
+                    } else {
+                        group.matchesQuery(normalizedQuery)
+                    }
+                    val matchesFilter = when (selectedFilter) {
+                        GroupFilter.All -> true
+                        GroupFilter.StrictActive -> group.isStrictActive
+                        GroupFilter.Emergency -> group.isEmergencyActive
+                    }
+                    matchesSearch && matchesFilter
+                }
+            }
+        }
+
         Column(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
             AdminSessionBanner(remainingMs = uiState.adminSessionRemainingMs)
-
-            val filteredGroups = uiState.groups.filter { group ->
-                val normalizedQuery = searchQuery.trim()
-                val matchesSearch = if (normalizedQuery.isBlank()) {
-                    true
-                } else {
-                    group.matchesQuery(normalizedQuery)
-                }
-                val matchesFilter = when (selectedFilter) {
-                    GroupFilter.All -> true
-                    GroupFilter.StrictActive -> group.isStrictActive
-                    GroupFilter.Emergency -> group.isEmergencyActive
-                }
-                matchesSearch && matchesFilter
-            }
 
             LazyColumn(
                 modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
