@@ -22,7 +22,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 fun DestinationBottomBar(navController: NavController) {
     val items = listOf(
         BottomNavItem("Overview", DeviceControlsRoute, Icons.Default.Home),
-        // Tab 2: Global rule sets (always allowed, blocklists, uninstall protection)
+        // Tab 2: Global rule sets (Allowlist, blocklists, uninstall protection)
         BottomNavItem("Rules", AppRulesRoute, Icons.Default.Warning),
         // Tab 3: Group based schedule settings and rules
         BottomNavItem("Groups", GroupListRoute, Icons.Default.Group),

@@ -57,6 +57,8 @@ data class GroupDetailUiState(
 
     val priorityIndex: Int = 1000,
     val strictEnabled: Boolean = false,
+    val scheduleBlockId: Long? = null,
+    val hasScheduleBlock: Boolean = false,
     val scheduleEnabled: Boolean = false,
     val scheduleDaysMask: Int = DEFAULT_WEEKDAY_MASK,
     val scheduleStartMinute: Int = DEFAULT_START_MINUTE,
@@ -64,6 +66,7 @@ data class GroupDetailUiState(
     val hourlyLimitMs: Long = 0,
     val dailyLimitMs: Long = 0,
     val opensPerDay: Int = 0,
+    val allAppsTargetingEnabled: Boolean = false,
 
     val emergencyEnabled: Boolean = false,
     val unlocksPerDay: Int = 0,
@@ -101,22 +104,19 @@ class GroupDetailViewModel(
             val loadedState = withContext(Dispatchers.IO) {
                 val budgetDao = db.budgetDao()
                 val scheduleDao = db.scheduleDao()
-                val alwaysAllowedPackages = policyEngine.getAlwaysAllowedAppsAsync()
-                val disabledPackageReasons = alwaysAllowedPackages.associateWith {
-                    "Always allowed apps cannot be blocked"
-                }
+                val protectionSnapshot = policyEngine.getAppProtectionSnapshotAsync()
                 val groupLimit = resolvedGroupId?.let { budgetDao.getGroupLimit(it) }
                 val emergencyConfig = resolvedGroupId?.let { budgetDao.getGroupEmergencyConfig(it) }
                 val memberPackages = resolvedGroupId
                     ?.let { budgetDao.getPackagesForGroup(it) }
                     .orEmpty()
+                    .filter(protectionSnapshot::isEligibleForGroupMembership)
                     .sorted()
                 val scheduleBlock = resolvedGroupId
                     ?.let { scheduleDao.getBlocksForGroup(it).firstOrNull() }
                 val appOptions = loadInstalledAppOptions(
                     context = appContext,
-                    includePackageNames = memberPackages.toSet(),
-                    disabledPackageReasons = disabledPackageReasons
+                    includePackageNames = memberPackages.toSet()
                 )
 
                 GroupDetailUiState(
@@ -129,13 +129,19 @@ class GroupDetailViewModel(
                     availableApps = appOptions,
                     priorityIndex = groupLimit?.priorityIndex ?: 1000,
                     strictEnabled = groupLimit?.strictEnabled ?: false,
-                    scheduleEnabled = scheduleBlock != null,
+                    scheduleBlockId = scheduleBlock?.id,
+                    hasScheduleBlock = scheduleBlock != null,
+                    scheduleEnabled = scheduleBlock?.enabled == true,
                     scheduleDaysMask = scheduleBlock?.daysMask ?: DEFAULT_WEEKDAY_MASK,
                     scheduleStartMinute = scheduleBlock?.startMinute ?: DEFAULT_START_MINUTE,
                     scheduleEndMinute = scheduleBlock?.endMinute ?: DEFAULT_END_MINUTE,
                     hourlyLimitMs = groupLimit?.hourlyLimitMs ?: 0L,
                     dailyLimitMs = groupLimit?.dailyLimitMs ?: 0L,
                     opensPerDay = groupLimit?.opensPerDay ?: 0,
+                    allAppsTargetingEnabled = isAllAppsScheduleTargetEnabled(
+                        strictEnabled = groupLimit?.strictEnabled ?: false,
+                        storedTargetMode = groupLimit?.scheduleTargetMode.orEmpty()
+                    ),
                     emergencyEnabled = emergencyConfig?.enabled ?: false,
                     unlocksPerDay = clampEmergencyUnlocksPerDay(emergencyConfig?.unlocksPerDay ?: 0),
                     minutesPerUnlock = clampEmergencyMinutesPerUnlock(emergencyConfig?.minutesPerUnlock ?: 0),
@@ -159,11 +165,32 @@ class GroupDetailViewModel(
     }
 
     fun toggleStrictOption(enabled: Boolean) {
-        _uiState.update { it.copy(strictEnabled = enabled, statusMessage = null) }
+        _uiState.update {
+            it.copy(
+                strictEnabled = enabled,
+                allAppsTargetingEnabled = if (enabled) it.allAppsTargetingEnabled else false,
+                statusMessage = null
+            )
+        }
+    }
+
+    fun toggleAllAppsTargeting(enabled: Boolean) {
+        _uiState.update {
+            it.copy(
+                allAppsTargetingEnabled = enabled && it.strictEnabled,
+                statusMessage = null
+            )
+        }
     }
 
     fun toggleScheduleOption(enabled: Boolean) {
-        _uiState.update { it.copy(scheduleEnabled = enabled, statusMessage = null) }
+        _uiState.update {
+            it.copy(
+                scheduleEnabled = enabled,
+                hasScheduleBlock = it.hasScheduleBlock || enabled,
+                statusMessage = null
+            )
+        }
     }
 
     fun updateScheduleDay(dayIndex: Int, selected: Boolean) {
@@ -329,6 +356,9 @@ class GroupDetailViewModel(
 
             val result = withContext(Dispatchers.IO) {
                 runCatching {
+                    val protectionSnapshot = policyEngine.getAppProtectionSnapshotAsync()
+                    val eligibleMembers = current.memberPackages
+                        .filter(protectionSnapshot::isEligibleForGroupMembership)
                     db.withTransaction {
                         val budgetDao = db.budgetDao()
                         val scheduleDao = db.scheduleDao()
@@ -341,6 +371,10 @@ class GroupDetailViewModel(
                                 hourlyLimitMs = current.hourlyLimitMs,
                                 opensPerDay = current.opensPerDay,
                                 strictEnabled = current.strictEnabled,
+                                scheduleTargetMode = resolvePersistedScheduleTargetMode(
+                                    strictEnabled = current.strictEnabled,
+                                    allAppsEnabled = current.allAppsTargetingEnabled
+                                ),
                                 enabled = true
                             )
                         )
@@ -353,7 +387,7 @@ class GroupDetailViewModel(
                             )
                         )
                         budgetDao.deleteMappingsForGroup(finalGroupId)
-                        current.memberPackages.forEach { packageName ->
+                        eligibleMembers.forEach { packageName ->
                             budgetDao.upsertMapping(
                                 com.ankit.destination.data.AppGroupMap(
                                     packageName = packageName,
@@ -361,14 +395,15 @@ class GroupDetailViewModel(
                                 )
                             )
                         }
-                        val scheduleBlocks = if (current.scheduleEnabled) {
+                        val scheduleBlocks = if (current.hasScheduleBlock) {
                             listOf(
                                 ScheduleBlock(
+                                    id = current.scheduleBlockId ?: 0L,
                                     name = "$trimmedName schedule",
                                     daysMask = current.scheduleDaysMask,
                                     startMinute = current.scheduleStartMinute,
                                     endMinute = current.scheduleEndMinute,
-                                    enabled = true,
+                                    enabled = current.scheduleEnabled,
                                     kind = ScheduleBlockKind.GROUPS.name,
                                     strict = current.strictEnabled,
                                     immutable = false,

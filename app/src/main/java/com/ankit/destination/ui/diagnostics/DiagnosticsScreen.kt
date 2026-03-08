@@ -11,7 +11,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.foundation.background
@@ -57,10 +59,13 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ankit.destination.policy.DevicePolicyFacade
+import com.ankit.destination.policy.PackageDiagnostics
+import com.ankit.destination.policy.PackageDiagnosticsDisposition
 import com.ankit.destination.policy.PolicyEngine
 import com.ankit.destination.security.AppLockManager
 import com.ankit.destination.ui.components.AdminSessionBanner
 import com.ankit.destination.ui.components.AdminSessionDialog
+import com.ankit.destination.ui.components.AppPickerDialog
 import com.ankit.destination.ui.components.collectAsStateWithLifecycleCompat
 import java.text.DateFormat
 import java.util.Date
@@ -85,6 +90,7 @@ fun DiagnosticsScreen() {
     )
     val uiState by viewModel.uiState.collectAsStateWithLifecycleCompat()
     var confirmAction by remember { mutableStateOf<DangerConfirmAction?>(null) }
+    var showHiddenPicker by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         viewModel.refresh()
@@ -95,6 +101,19 @@ fun DiagnosticsScreen() {
             onDismiss = { viewModel.dismissAuthDialog() },
             onAuthenticated = { _ -> viewModel.onAuthenticated() },
             appLockManager = appLockManager
+        )
+    }
+
+    if (showHiddenPicker) {
+        AppPickerDialog(
+            title = "Add hidden apps",
+            options = uiState.availableHiddenAppOptions,
+            selectedPackageNames = emptySet(),
+            onDismiss = { showHiddenPicker = false },
+            onConfirm = { selected ->
+                showHiddenPicker = false
+                viewModel.addHiddenApps(selected)
+            }
         )
     }
 
@@ -380,6 +399,90 @@ fun DiagnosticsScreen() {
                 }
 
                 item {
+                    ElevatedCard(
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                        colors = CardDefaults.elevatedCardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                        )
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "Hidden Apps",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                TextButton(onClick = { showHiddenPicker = true }) {
+                                    Icon(Icons.Default.Add, contentDescription = null)
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Add")
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            if (uiState.hiddenApps.isEmpty()) {
+                                Text(
+                                    "No hidden apps configured.",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            } else {
+                                uiState.hiddenApps.forEach { hiddenApp ->
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                hiddenApp.label,
+                                                style = MaterialTheme.typography.titleSmall,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                            Text(
+                                                hiddenApp.packageName,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            Text(
+                                                if (hiddenApp.locked) {
+                                                    "Locked default hidden app"
+                                                } else {
+                                                    "Excluded from normal policy targeting"
+                                                },
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        TextButton(
+                                            onClick = { viewModel.removeHiddenApp(hiddenApp.packageName) },
+                                            enabled = !hiddenApp.locked
+                                        ) {
+                                            Text("Remove")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                uiState.snapshot?.let { snapshot ->
+                    item {
+                        Text(
+                            "Package Diagnostics",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(bottom = 8.dp)
+                        )
+                    }
+                    items(snapshot.packageDiagnostics, key = { it.packageName }) { diagnostic ->
+                        PackageDiagnosticCard(diagnostic = diagnostic)
+                    }
+                }
+
+                item {
                     Text(
                         "Danger Zone",
                         style = MaterialTheme.typography.titleLarge,
@@ -420,6 +523,65 @@ fun DiagnosticsScreen() {
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun PackageDiagnosticCard(diagnostic: PackageDiagnostics) {
+    val dispositionColor = when (diagnostic.disposition) {
+        PackageDiagnosticsDisposition.SUSPEND_TARGET -> MaterialTheme.colorScheme.error
+        PackageDiagnosticsDisposition.ALLOWLIST_EXCLUDED -> MaterialTheme.colorScheme.secondary
+        PackageDiagnosticsDisposition.HIDDEN -> MaterialTheme.colorScheme.tertiary
+        PackageDiagnosticsDisposition.RUNTIME_EXEMPT -> MaterialTheme.colorScheme.secondary
+        PackageDiagnosticsDisposition.PROTECTED -> MaterialTheme.colorScheme.secondary
+        PackageDiagnosticsDisposition.ELIGIBLE_NOT_ACTIVE -> MaterialTheme.colorScheme.primary
+        PackageDiagnosticsDisposition.NOT_INSTALLED -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+        colors = CardDefaults.elevatedCardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+        )
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                diagnostic.packageName,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                diagnostic.disposition.name.replace('_', ' '),
+                color = dispositionColor,
+                style = MaterialTheme.typography.labelLarge
+            )
+            diagnostic.primaryReason?.takeIf { it.isNotBlank() }?.let { reason ->
+                Spacer(modifier = Modifier.height(6.dp))
+                Text("Primary reason: $reason")
+            }
+            diagnostic.allowlistReason?.takeIf { it.isNotBlank() }?.let { reason ->
+                Spacer(modifier = Modifier.height(6.dp))
+                Text("All-apps exclusion: $reason")
+            }
+            diagnostic.protectionReason?.takeIf { it.isNotBlank() }?.let { reason ->
+                Spacer(modifier = Modifier.height(6.dp))
+                Text("Policy eligibility: $reason")
+            }
+            if (diagnostic.activeReasons.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    "Active reasons: ${diagnostic.activeReasons.sorted().joinToString()}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                diagnostic.nextPotentialClearEvent,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }

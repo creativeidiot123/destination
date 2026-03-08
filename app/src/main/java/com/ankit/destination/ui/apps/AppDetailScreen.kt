@@ -146,7 +146,7 @@ fun AppDetailScreen(
                 actions = {
                     TextButton(
                         onClick = { viewModel.requestSave() },
-                        enabled = !uiState.isAlwaysAllowed
+                        enabled = uiState.ineligibilityReason == null
                     ) {
                         Text("Save")
                     }
@@ -204,7 +204,7 @@ fun AppDetailScreen(
                     }
                 }
 
-                if (uiState.isAlwaysAllowed) {
+                if (uiState.isAllowlisted && uiState.ineligibilityReason == null) {
                     item {
                         ElevatedCard(
                             modifier = Modifier.fillMaxWidth(),
@@ -213,9 +213,26 @@ fun AppDetailScreen(
                             )
                         ) {
                             Text(
-                                text = "This app is in the allowlist, so blocking settings are locked.",
+                                text = "This app is in Allowlist. It stays eligible for direct and group policies, but all-apps strict expansion will skip it.",
                                 modifier = Modifier.padding(16.dp),
                                 color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                        }
+                    }
+                }
+
+                uiState.ineligibilityReason?.let { reason ->
+                    item {
+                        ElevatedCard(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.elevatedCardColors(
+                                containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                            )
+                        ) {
+                            Text(
+                                text = reason,
+                                modifier = Modifier.padding(16.dp),
+                                color = MaterialTheme.colorScheme.onTertiaryContainer
                             )
                         }
                     }
@@ -225,7 +242,7 @@ fun AppDetailScreen(
                     ElevatedCard(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .alpha(if (uiState.isAlwaysAllowed) 0.5f else 1f),
+                            .alpha(if (uiState.ineligibilityReason != null) 0.5f else 1f),
                         colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
                     ) {
                         Column(modifier = Modifier.padding(16.dp)) {
@@ -235,7 +252,7 @@ fun AppDetailScreen(
                                 title = "Hourly limit",
                                 value = if (uiState.restrictHourly) "${uiState.hourlyLimitMs / 60_000} min/hr" else "No cap",
                                 enabled = uiState.restrictHourly,
-                                controlsEnabled = !uiState.isAlwaysAllowed,
+                                controlsEnabled = uiState.ineligibilityReason == null,
                                 onToggle = { enabled ->
                                     viewModel.toggleHourlyLimit(enabled)
                                     toast(if (enabled) "Hourly limit enabled." else "Hourly limit disabled.")
@@ -249,7 +266,7 @@ fun AppDetailScreen(
                                 title = "Daily limit",
                                 value = if (uiState.restrictDaily) "${uiState.dailyLimitMs / 60_000} min/day" else "No cap",
                                 enabled = uiState.restrictDaily,
-                                controlsEnabled = !uiState.isAlwaysAllowed,
+                                controlsEnabled = uiState.ineligibilityReason == null,
                                 onToggle = { enabled ->
                                     viewModel.toggleDailyLimit(enabled)
                                     toast(if (enabled) "Daily limit enabled." else "Daily limit disabled.")
@@ -263,7 +280,7 @@ fun AppDetailScreen(
                                 title = "Launch limit",
                                 value = if (uiState.restrictOpens) "${uiState.opensLimit} opens/day" else "No cap",
                                 enabled = uiState.restrictOpens,
-                                controlsEnabled = !uiState.isAlwaysAllowed,
+                                controlsEnabled = uiState.ineligibilityReason == null,
                                 onToggle = { enabled ->
                                     viewModel.toggleOpensLimit(enabled)
                                     toast(if (enabled) "Launch limit enabled." else "Launch limit disabled.")
@@ -281,7 +298,7 @@ fun AppDetailScreen(
                     ElevatedCard(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .alpha(if (uiState.isAlwaysAllowed) 0.5f else 1f),
+                            .alpha(if (uiState.ineligibilityReason != null) 0.5f else 1f),
                         colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
                     ) {
                         Column(modifier = Modifier.padding(16.dp)) {
@@ -294,7 +311,7 @@ fun AppDetailScreen(
                                 )
                                 Switch(
                                     checked = uiState.isEmergencyEnabled,
-                                    enabled = !uiState.isAlwaysAllowed,
+                                    enabled = uiState.ineligibilityReason == null,
                                     onCheckedChange = { enabled ->
                                         viewModel.toggleEmergency(enabled)
                                         toast(if (enabled) "Emergency access enabled." else "Emergency access disabled.")
@@ -305,7 +322,7 @@ fun AppDetailScreen(
                                 Spacer(modifier = Modifier.height(12.dp))
                                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                     Text("Unlocks/day")
-                                    TextButton(enabled = !uiState.isAlwaysAllowed, onClick = {
+                                    TextButton(enabled = uiState.ineligibilityReason == null, onClick = {
                                         activeDialog = AppLimitDialogType.EMERGENCY_UNLOCKS
                                         toast("Editing emergency unlocks per day.")
                                     }) {
@@ -314,7 +331,7 @@ fun AppDetailScreen(
                                 }
                                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                     Text("Minutes/unlock")
-                                    TextButton(enabled = !uiState.isAlwaysAllowed, onClick = {
+                                    TextButton(enabled = uiState.ineligibilityReason == null, onClick = {
                                         activeDialog = AppLimitDialogType.EMERGENCY_MINUTES
                                         toast("Editing emergency minutes per unlock.")
                                     }) {

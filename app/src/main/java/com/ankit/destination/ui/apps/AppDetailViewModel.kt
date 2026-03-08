@@ -30,7 +30,9 @@ data class AppDetailUiState(
     val packageName: String = "",
     val label: String = "",
     val isLoading: Boolean = true,
-    val isAlwaysAllowed: Boolean = false,
+    val isAllowlisted: Boolean = false,
+    val isHidden: Boolean = false,
+    val ineligibilityReason: String? = null,
     val adminSessionActive: Boolean = false,
     val adminSessionRemainingMs: Long = 0,
     val showAuthDialog: Boolean = false,
@@ -76,7 +78,7 @@ class AppDetailViewModel(
             val refreshed = withContext(Dispatchers.IO) {
                 val policy = db.budgetDao().getAppPolicy(packageName)
                 val usageInputs = budgetOrchestrator.readUsageSnapshot().usageInputs
-                val isAlwaysAllowed = policyEngine.getAlwaysAllowedAppsAsync().contains(packageName)
+                val protectionSnapshot = policyEngine.getAppProtectionSnapshotAsync()
                 val label = runCatching {
                     val appInfo = appContext.packageManager.getApplicationInfo(packageName, 0)
                     appContext.packageManager.getApplicationLabel(appInfo).toString()
@@ -85,7 +87,9 @@ class AppDetailViewModel(
                     packageName = packageName,
                     label = label,
                     isLoading = false,
-                    isAlwaysAllowed = isAlwaysAllowed,
+                    isAllowlisted = protectionSnapshot.isAllowlisted(packageName),
+                    isHidden = protectionSnapshot.isHidden(packageName),
+                    ineligibilityReason = protectionSnapshot.manualPolicyIneligibilityReason(packageName),
                     adminSessionActive = appLockManager.isAdminSessionActive(),
                     adminSessionRemainingMs = appLockManager.getSessionRemainingMs(),
                     restrictHourly = (policy?.hourlyLimitMs ?: 0L) > 0L,
@@ -148,9 +152,10 @@ class AppDetailViewModel(
     }
 
     fun requestSave() {
-        if (_uiState.value.isAlwaysAllowed) {
+        val ineligibilityReason = _uiState.value.ineligibilityReason
+        if (ineligibilityReason != null) {
             viewModelScope.launch {
-                _events.emit(AppDetailEvent.Toast("Always allowed apps cannot be blocked."))
+                _events.emit(AppDetailEvent.Toast(ineligibilityReason))
             }
             return
         }
@@ -172,6 +177,21 @@ class AppDetailViewModel(
 
     private fun saveInternal() {
         viewModelScope.launch {
+            val ineligibilityReason = withContext(Dispatchers.IO) {
+                policyEngine.getAppProtectionSnapshotAsync().manualPolicyIneligibilityReason(packageName)
+            }
+            if (ineligibilityReason != null) {
+                _events.emit(AppDetailEvent.Toast(ineligibilityReason))
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        ineligibilityReason = ineligibilityReason,
+                        statusMessage = ineligibilityReason,
+                        isError = true
+                    )
+                }
+                return@launch
+            }
             _uiState.update { it.copy(isLoading = true, statusMessage = null) }
             val state = _uiState.value
             val result = withContext(Dispatchers.IO) {

@@ -81,11 +81,11 @@ class PolicyEngineAlarmPlanningTest {
                 usedHourMs = mapOf("limited.app" to 4_000L),
                 opensToday = emptyMap()
             ),
-            allowlistPackages = setOf("allowed.app"),
+            fullyExemptPackages = emptySet(),
             emergencyStates = emptyList()
         )
 
-        assertEquals(18_000L, nextWakeAt)
+        assertEquals(16_000L, nextWakeAt)
     }
 
     @Test

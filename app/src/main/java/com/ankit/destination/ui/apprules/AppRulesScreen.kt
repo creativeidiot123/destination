@@ -102,13 +102,6 @@ fun AppRulesScreen() {
     }
 
     if (showPicker) {
-        val disabledReasons = when (selectedCategory) {
-            AppRuleCategory.ALLOWLIST -> mapOf(context.packageName to "Locked allowlist app")
-            AppRuleCategory.BLOCKLIST -> uiState.alwaysAllowedPackages.associateWith {
-                "Always allowed apps cannot be blocked"
-            }
-            AppRuleCategory.UNINSTALL_PROTECTION -> emptyMap()
-        }
         val pickerOptions = uiState.availableApps
             .filterNot {
                 selectedCategory == AppRuleCategory.UNINSTALL_PROTECTION &&
@@ -116,12 +109,7 @@ fun AppRulesScreen() {
             }
         AppPickerDialog(
             title = "Select apps",
-            options = pickerOptions.map { option ->
-                option.copy(
-                    isSelectable = !disabledReasons.containsKey(option.packageName),
-                    supportingTag = disabledReasons[option.packageName]
-                )
-            },
+            options = pickerOptions,
             selectedPackageNames = emptySet(),
             onDismiss = { showPicker = false },
             onConfirm = { selected ->
@@ -293,13 +281,6 @@ fun AppRulesScreen() {
                                                 style = MaterialTheme.typography.bodyMedium,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
-                                            if (rule.isLocked) {
-                                                Text(
-                                                    "Locked allowlist app",
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-                                            }
                                         }
                                     },
                                     trailingContent = {

@@ -13,6 +13,7 @@ import android.widget.NumberPicker
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.widget.doAfterTextChanged
+import com.ankit.destination.policy.PolicyEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.Locale
@@ -37,13 +38,17 @@ suspend fun loadInstalledAppOptions(
     context: Context,
     includePackageNames: Set<String> = emptySet(),
     launchableOnly: Boolean = true,
+    includeHiddenApps: Boolean = false,
     disabledPackageReasons: Map<String, String> = emptyMap()
 ): List<AppOption> = withContext(Dispatchers.IO) {
     val packageManager = context.packageManager
+    val protectionSnapshot = PolicyEngine(context.applicationContext).getAppProtectionSnapshotAsync()
     val catalogEntries = SharedInstalledAppCatalogCache.getCatalog(
         context = context,
         launchableOnly = launchableOnly
-    )
+    ).filterNot { entry ->
+        !includeHiddenApps && protectionSnapshot.shouldHideFromStandardLists(entry.packageName)
+    }
     val cachedPackageNames = catalogEntries.asSequence()
         .map(InstalledAppCatalogEntry::packageName)
         .toHashSet()
@@ -57,6 +62,9 @@ suspend fun loadInstalledAppOptions(
                 packageManager = packageManager,
                 packageName = packageName
             )
+        }
+        .filterNot { entry ->
+            !includeHiddenApps && protectionSnapshot.shouldHideFromStandardLists(entry.packageName)
         }
         .toList()
 

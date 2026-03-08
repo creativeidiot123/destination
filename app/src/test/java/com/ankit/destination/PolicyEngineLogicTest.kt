@@ -6,6 +6,8 @@ import com.ankit.destination.policy.ModeState
 import com.ankit.destination.policy.EmergencyConfigInput
 import com.ankit.destination.policy.GroupPolicyInput
 import com.ankit.destination.policy.PolicyEngine
+import com.ankit.destination.policy.AppPolicyInput
+import com.ankit.destination.policy.UsageInputs
 import com.ankit.destination.schedule.ScheduleDecision
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -302,5 +304,45 @@ class PolicyEngineLogicTest {
                 nowMs = 10_000L
             )
         )
+    }
+
+    @Test
+    fun computeClosestBudgetCheckAtMs_excludesFullyExemptButKeepsAllowlistEligible() {
+        val next = PolicyEngine.computeClosestBudgetCheckAtMs(
+            nowMs = 10_000L,
+            baseNextCheckAtMs = null,
+            groupPolicies = listOf(
+                GroupPolicyInput(
+                    groupId = "g1",
+                    priorityIndex = 0,
+                    strictEnabled = false,
+                    dailyLimitMs = 60_000L,
+                    hourlyLimitMs = 0L,
+                    opensPerDay = 0,
+                    members = setOf("allow.app", "hidden.app"),
+                    emergencyConfig = EmergencyConfigInput(false, 0, 0),
+                    scheduleBlocked = false
+                )
+            ),
+            appPolicies = listOf(
+                AppPolicyInput(
+                    packageName = "allow.app",
+                    dailyLimitMs = 60_000L,
+                    hourlyLimitMs = 0L,
+                    opensPerDay = 0,
+                    emergencyConfig = EmergencyConfigInput(false, 0, 0),
+                    scheduleBlocked = false
+                )
+            ),
+            usageInputs = UsageInputs(
+                usedTodayMs = mapOf("allow.app" to 30_000L, "hidden.app" to 59_000L),
+                usedHourMs = emptyMap(),
+                opensToday = emptyMap()
+            ),
+            fullyExemptPackages = setOf("hidden.app"),
+            emergencyStates = emptyList()
+        )
+
+        assertEquals(40_000L, next)
     }
 }

@@ -8,7 +8,10 @@ import android.os.Looper
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
-internal class PolicyApplier(private val facade: DevicePolicyClient) {
+internal class PolicyApplier(
+    private val facade: DevicePolicyClient,
+    private val protectedPackagesProvider: ProtectedPackagesProvider? = null
+) {
 
     fun apply(state: PolicyState, hostActivity: Activity? = null): ApplyResult {
         FocusLog.d(FocusEventId.POLICY_APPLY_START, "┌── PolicyApplier.apply() START ──")
@@ -104,6 +107,9 @@ internal class PolicyApplier(private val facade: DevicePolicyClient) {
             .onFailure { errors += "setAutoTimeRequired failed: ${it.message}" }
 
         FocusLog.d(FocusEventId.LOCK_CALC, "│ lockTask: allowlist=${state.lockTaskAllowlist.size} features=${state.lockTaskFeatures}")
+        runCatching { facade.setBlankDeviceOwnerLockScreenInfo() }
+            .onFailure { errors += "setDeviceOwnerLockScreenInfo failed: ${it.message}" }
+
         runCatching { facade.setLockTaskPackages(state.lockTaskAllowlist.toList()) }
             .onFailure { errors += "setLockTaskPackages failed: ${it.message}" }
 
@@ -124,8 +130,19 @@ internal class PolicyApplier(private val facade: DevicePolicyClient) {
         runCatching { facade.setAsHomeForKiosk(false) }
             .onFailure { errors += "setAsHomeForKiosk failed: ${it.message}" }
 
-        val toSuspend = state.suspendTargets - state.previouslySuspended
-        val toUnsuspend = state.previouslySuspended - state.suspendTargets
+        val hardProtectedPackages = protectedPackagesProvider?.getHardProtectedPackages().orEmpty()
+        val desiredSuspendTargets = state.suspendTargets - hardProtectedPackages
+        val trackedPreviouslySuspended = state.previouslySuspended - hardProtectedPackages
+        val skippedProtectedPackages = state.suspendTargets.intersect(hardProtectedPackages) +
+            state.previouslySuspended.intersect(hardProtectedPackages)
+        val toSuspend = desiredSuspendTargets - trackedPreviouslySuspended
+        val toUnsuspend = trackedPreviouslySuspended - desiredSuspendTargets
+        if (skippedProtectedPackages.isNotEmpty()) {
+            FocusLog.w(
+                FocusEventId.SUSPEND_TARGET,
+                "protected packages excluded from suspension delta: ${skippedProtectedPackages.joinToString(",")}"
+            )
+        }
         FocusLog.d(FocusEventId.SUSPEND_TARGET, "│ SUSPEND DELTA: toSuspend=${toSuspend.size} toUnsuspend=${toUnsuspend.size}")
         if (toSuspend.isNotEmpty()) {
             FocusLog.d(FocusEventId.SUSPEND_TARGET, "│   suspending: ${toSuspend.joinToString(",")}")
@@ -281,8 +298,9 @@ internal class PolicyApplier(private val facade: DevicePolicyClient) {
         var suspendedMismatchCount = 0
         var suspendUnknownCount = 0
         if (facade.canVerifyPackageSuspension()) {
-            val shouldBeSuspended = state.suspendTargets
-            val shouldBeUnsuspended = state.previouslySuspended - state.suspendTargets
+            val hardProtectedPackages = protectedPackagesProvider?.getHardProtectedPackages().orEmpty()
+            val shouldBeSuspended = state.suspendTargets - hardProtectedPackages
+            val shouldBeUnsuspended = (state.previouslySuspended - hardProtectedPackages) - shouldBeSuspended
             FocusLog.d(FocusEventId.POLICY_VERIFY_PASS, "│ verifying suspension: shouldSuspend=${shouldBeSuspended.size} shouldUnsuspend=${shouldBeUnsuspended.size}")
             shouldBeSuspended.forEach { packageName ->
                 val suspended = facade.isPackageSuspended(packageName)

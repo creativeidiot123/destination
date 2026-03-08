@@ -12,5 +12,6 @@ data class GroupLimit(
     val hourlyLimitMs: Long,
     val opensPerDay: Int,
     val strictEnabled: Boolean = false,
+    val scheduleTargetMode: String = GroupTargetMode.SELECTED_APPS.name,
     val enabled: Boolean = true
 )

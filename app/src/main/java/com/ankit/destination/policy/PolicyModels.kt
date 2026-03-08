@@ -138,7 +138,9 @@ data class DiagnosticsSnapshot(
 enum class PackageDiagnosticsDisposition {
     SUSPEND_TARGET,
     ELIGIBLE_NOT_ACTIVE,
-    ALLOWLISTED,
+    ALLOWLIST_EXCLUDED,
+    HIDDEN,
+    RUNTIME_EXEMPT,
     PROTECTED,
     NOT_INSTALLED
 }
@@ -149,6 +151,8 @@ data class PackageDiagnostics(
     val primaryReason: String?,
     val disposition: PackageDiagnosticsDisposition,
     val allowlistReason: String?,
+    val protectionReason: String?,
+    val hiddenLocked: Boolean,
     val fromStrictInstallSuspended: Boolean,
     val nextPotentialClearEvent: String
 )

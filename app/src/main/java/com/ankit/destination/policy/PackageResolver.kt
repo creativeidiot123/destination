@@ -6,29 +6,28 @@ import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.content.pm.PackageManager.NameNotFoundException
 import android.net.Uri
+import android.provider.Settings.Secure
 import android.provider.Settings
 import android.provider.Telephony
 import android.telecom.TelecomManager
 
-internal enum class SuspendabilityStatus {
-    SUSPENDABLE,
-    ALLOWLISTED,
-    NOT_INSTALLED,
-    PROTECTED
+internal interface InstalledAppResolver {
+    fun getInstalledTargetablePackages(): Set<String>
 }
 
-internal interface PackageResolverClient {
-    fun resolveAllowlist(
-        userChosenEmergencyApps: Set<String>,
-        alwaysAllowedApps: Set<String> = emptySet()
-    ): AllowlistResolution
+internal interface ProtectedPackagesProvider {
+    fun getHardProtectedPackages(): Set<String>
+    fun isHardProtectedPackage(packageName: String): Boolean
+}
+
+internal interface PackageResolverClient : InstalledAppResolver, ProtectedPackagesProvider {
+    fun resolveRuntimeAllowlist(userChosenEmergencyApps: Set<String>): AllowlistResolution
 
     fun computeUsageAccessRecoverySuspendTargets(recoveryAllowlist: Set<String>): Set<String>
     fun filterSuspendable(packages: Set<String>, allowlist: Set<String>): Set<String>
     fun resolveUsageAccessRecoveryPackages(): PackageResolver.UsageAccessRecoveryResolution
     fun isPackageInstalled(packageName: String): Boolean
     fun packageLabelOrPackage(packageName: String): String
-    fun suspendabilityStatus(packageName: String, allowlist: Set<String>): SuspendabilityStatus
 }
 
 internal class PackageResolver(private val context: Context) : PackageResolverClient {
@@ -41,26 +40,13 @@ internal class PackageResolver(private val context: Context) : PackageResolverCl
         val warnings: List<String>
     )
 
-    override fun resolveAllowlist(userChosenEmergencyApps: Set<String>, alwaysAllowedApps: Set<String>): AllowlistResolution {
-        FocusLog.d(FocusEventId.ALLOWLIST_RESOLVE, "┌── resolveAllowlist() emergency=${userChosenEmergencyApps.size} alwaysAllowed=${alwaysAllowedApps.size}")
+    override fun resolveRuntimeAllowlist(userChosenEmergencyApps: Set<String>): AllowlistResolution {
+        FocusLog.d(FocusEventId.ALLOWLIST_RESOLVE, "┌── resolveRuntimeAllowlist() emergency=${userChosenEmergencyApps.size}")
         val allowlist = linkedSetOf<String>()
         val reasons = linkedMapOf<String, String>()
 
         addPackage(allowlist, reasons, context.packageName, "controller app")
         FocusLog.v(FocusEventId.ALLOWLIST_RESOLVE, "│ +controller: ${context.packageName}")
-
-        alwaysAllowedApps
-            .asSequence()
-            .map(String::trim)
-            .filter(String::isNotBlank)
-            .forEach { pkg ->
-                if (isInstalled(pkg)) {
-                    addPackage(allowlist, reasons, pkg, "always allowed app")
-                    FocusLog.v(FocusEventId.ALLOWLIST_RESOLVE, "│ +alwaysAllowed: $pkg")
-                } else {
-                    FocusLog.v(FocusEventId.ALLOWLIST_RESOLVE, "│ ✗ alwaysAllowed NOT installed: $pkg")
-                }
-            }
 
         userChosenEmergencyApps
             .asSequence()
@@ -88,21 +74,54 @@ internal class PackageResolver(private val context: Context) : PackageResolverCl
         permCtrl?.let { addPackage(allowlist, reasons, it, "permission controller") }
         FocusLog.v(FocusEventId.ALLOWLIST_RESOLVE, "│ permissionController=${permCtrl ?: "none"}")
 
-        FocusLog.d(FocusEventId.ALLOWLIST_RESOLVE, "└── resolveAllowlist() total=${allowlist.size} pkgs: ${allowlist.joinToString(",")}")
+        FocusLog.d(FocusEventId.ALLOWLIST_RESOLVE, "└── resolveRuntimeAllowlist() total=${allowlist.size} pkgs: ${allowlist.joinToString(",")}")
         return AllowlistResolution(packages = allowlist, reasons = reasons)
     }
 
     fun computeSuspendTargets(allowlist: Set<String>): Set<String> {
-        val launchables = resolveLaunchablePackages()
-        FocusLog.d(FocusEventId.SUSPEND_TARGET, "computeSuspendTargets: launchable=${launchables.size} allowlist=${allowlist.size}")
-        val targets = launchables
+        val targetablePackages = getInstalledTargetablePackages()
+        FocusLog.d(FocusEventId.SUSPEND_TARGET, "computeSuspendTargets: targetable=${targetablePackages.size} allowlist=${allowlist.size}")
+        val targets = targetablePackages
             .asSequence()
             .filterNot { allowlist.contains(it) }
-            .filterNot { isProtectedPackage(it) }
+            .filterNot(::isHardProtectedPackage)
             .toSet()
-        val protectedCount = launchables.size - allowlist.size - targets.size
-        FocusLog.d(FocusEventId.SUSPEND_TARGET, "computeSuspendTargets: result=${targets.size} (filtered: allowlisted=${launchables.count { allowlist.contains(it) }} protected≈$protectedCount)")
+        val protectedCount = targetablePackages.count(::isHardProtectedPackage)
+        FocusLog.d(FocusEventId.SUSPEND_TARGET, "computeSuspendTargets: result=${targets.size} allowlisted=${targetablePackages.count { allowlist.contains(it) }} protected=$protectedCount")
         return targets
+    }
+
+    override fun getInstalledTargetablePackages(): Set<String> {
+        val launchables = resolveLaunchablePackages()
+        val targetable = launchables
+            .asSequence()
+            .filter(::isInstalled)
+            .filter(::isNonSystemPackage)
+            .toCollection(linkedSetOf())
+        FocusLog.d(
+            FocusEventId.SUSPEND_TARGET,
+            "Installed targetable packages=${targetable.size} launchable=${launchables.size}"
+        )
+        return targetable
+    }
+
+    override fun getHardProtectedPackages(): Set<String> {
+        return linkedSetOf<String>().apply {
+            add(context.packageName)
+            addAll(FocusConfig.protectedExactPackages)
+            resolveDefaultDialer()?.let(::add)
+            resolveDefaultSms()?.let(::add)
+            resolveDefaultLauncher()?.let(::add)
+            resolvePermissionController()?.let(::add)
+            resolveDefaultInputMethod()?.let(::add)
+        }
+    }
+
+    override fun isHardProtectedPackage(packageName: String): Boolean {
+        val normalized = packageName.trim()
+        if (normalized.isBlank()) return false
+        return normalized in getHardProtectedPackages() ||
+            isProtectedPackageName(normalized, context.packageName)
     }
 
     override fun computeUsageAccessRecoverySuspendTargets(recoveryAllowlist: Set<String>): Set<String> {
@@ -126,22 +145,13 @@ internal class PackageResolver(private val context: Context) : PackageResolverCl
             }
             .filter { isInstalled(it) }
             .filterNot { pkg ->
-                val prot = isProtectedPackage(pkg)
+                val prot = isHardProtectedPackage(pkg)
                 if (prot) FocusLog.v(FocusEventId.SUSPEND_TARGET, "filterSuspendable: $pkg skipped (protected)")
                 prot
             }
             .toSet()
         FocusLog.d(FocusEventId.SUSPEND_TARGET, "filterSuspendable: input=${packages.size} allowlist=${allowlist.size} → suspendable=${result.size}")
         return result
-    }
-
-    override fun suspendabilityStatus(packageName: String, allowlist: Set<String>): SuspendabilityStatus {
-        val normalized = packageName.trim()
-        if (normalized.isBlank()) return SuspendabilityStatus.NOT_INSTALLED
-        if (allowlist.contains(normalized)) return SuspendabilityStatus.ALLOWLISTED
-        if (!isInstalled(normalized)) return SuspendabilityStatus.NOT_INSTALLED
-        if (isProtectedPackage(normalized)) return SuspendabilityStatus.PROTECTED
-        return SuspendabilityStatus.SUSPENDABLE
     }
 
     override fun resolveUsageAccessRecoveryPackages(): UsageAccessRecoveryResolution {
@@ -225,6 +235,13 @@ internal class PackageResolver(private val context: Context) : PackageResolverCl
             ?.packageName
     }
 
+    private fun resolveDefaultInputMethod(): String? {
+        val flattened = Secure.getString(context.contentResolver, Secure.DEFAULT_INPUT_METHOD)
+            ?.substringBefore('/')
+            ?.trim()
+        return flattened?.takeIf(String::isNotBlank)
+    }
+
     private fun isInstalled(packageName: String): Boolean {
         return try {
             packageManager.getPackageInfo(packageName, 0)
@@ -286,10 +303,6 @@ internal class PackageResolver(private val context: Context) : PackageResolverCl
             )
             false
         }
-    }
-
-    private fun isProtectedPackage(packageName: String): Boolean {
-        return isProtectedPackageName(packageName, context.packageName)
     }
 
     private fun addPackage(

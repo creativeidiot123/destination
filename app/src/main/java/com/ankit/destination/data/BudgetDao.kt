@@ -41,14 +41,26 @@ interface BudgetDao {
     @Query("SELECT packageName FROM uninstall_protected_apps ORDER BY packageName ASC")
     suspend fun getUninstallProtectedPackages(): List<String>
 
+    @Query("SELECT * FROM hidden_apps ORDER BY packageName ASC")
+    suspend fun getHiddenApps(): List<HiddenApp>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertUninstallProtected(app: UninstallProtectedApp)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertHiddenApp(app: HiddenApp)
 
     @Query("DELETE FROM uninstall_protected_apps WHERE packageName = :packageName")
     suspend fun deleteUninstallProtected(packageName: String)
 
+    @Query("DELETE FROM hidden_apps WHERE packageName = :packageName")
+    suspend fun deleteHiddenApp(packageName: String)
+
     @Query("DELETE FROM uninstall_protected_apps")
     suspend fun deleteAllUninstallProtected()
+
+    @Query("DELETE FROM hidden_apps")
+    suspend fun deleteAllHiddenApps()
 
     @Query("SELECT * FROM app_policy WHERE enabled = 1")
     suspend fun getEnabledAppPolicies(): List<AppPolicy>
@@ -219,18 +231,6 @@ interface BudgetDao {
     }
 
     @Transaction
-    suspend fun addAlwaysAllowedExclusive(packageName: String) {
-        deleteAlwaysBlocked(packageName)
-        upsertAlwaysAllowed(AlwaysAllowedApp(packageName))
-    }
-
-    @Transaction
-    suspend fun addAlwaysBlockedExclusive(packageName: String) {
-        deleteAlwaysAllowed(packageName)
-        upsertAlwaysBlocked(AlwaysBlockedApp(packageName))
-    }
-
-    @Transaction
     suspend fun resetAllPolicyData(defaultControls: GlobalControls) {
         deleteAllMappings()
         deleteAllAppPolicies()
@@ -242,6 +242,7 @@ interface BudgetDao {
         deleteAllAlwaysAllowed()
         deleteAllAlwaysBlocked()
         deleteAllUninstallProtected()
+        deleteAllHiddenApps()
         deleteAllGlobalControls()
         upsertGlobalControls(defaultControls.copy(id = 1))
     }

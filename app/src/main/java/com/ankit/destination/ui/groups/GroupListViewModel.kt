@@ -164,7 +164,13 @@ class GroupListViewModel(
                                         emergencyMinutesPerUnlock = emergencyMinutesPerUnlock,
                                         effectiveBlocked = effectiveBlocked,
                                         scheduleSummary = scheduleBlock?.let { block ->
-                                            "${daysMaskLabel(block.daysMask)} - ${minuteToTimeLabel(block.startMinute)}-${minuteToTimeLabel(block.endMinute)}"
+                                            val window =
+                                                "${daysMaskLabel(block.daysMask)} - ${minuteToTimeLabel(block.startMinute)}-${minuteToTimeLabel(block.endMinute)}"
+                                            if (block.enabled) {
+                                                "Active block - $window"
+                                            } else {
+                                                "Inactive block - $window"
+                                            }
                                         } ?: "No schedule"
                                     )
                                 },

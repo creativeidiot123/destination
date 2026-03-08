@@ -121,7 +121,9 @@ internal object BlockReasonUtils {
 
     private fun parseLooseEffectiveReason(valueUpper: String): EffectiveBlockReason? {
         return when {
-            valueUpper.contains("SCHEDULED_BLOCK") || valueUpper.contains("SCHEDULE_GROUP") ->
+            valueUpper.contains("SCHEDULED_BLOCK_ALL_APPS") ||
+                valueUpper.contains("SCHEDULED_BLOCK") ||
+                valueUpper.contains("SCHEDULE_GROUP") ->
                 EffectiveBlockReason.SCHEDULED_BLOCK
 
             valueUpper.contains("HOURLY_CAP") ->

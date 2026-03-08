@@ -23,6 +23,7 @@ internal interface DevicePolicyClient {
     fun isAdminActive(): Boolean
     fun isDeviceOwner(): Boolean
     fun clearDeviceOwnerApp()
+    fun setBlankDeviceOwnerLockScreenInfo()
     fun setLockTaskPackages(packages: List<String>)
     fun setLockTaskFeatures(features: Int)
     fun getLockTaskFeatures(): Int?
@@ -69,6 +70,10 @@ internal class DevicePolicyFacade(private val context: Context) : DevicePolicyCl
 
     override fun clearDeviceOwnerApp() {
         dpm.clearDeviceOwnerApp(packageName)
+    }
+
+    override fun setBlankDeviceOwnerLockScreenInfo() {
+        dpm.setDeviceOwnerLockScreenInfo(adminComponent, " ")
     }
 
     override fun setLockTaskPackages(packages: List<String>) {

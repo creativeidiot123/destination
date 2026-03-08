@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ElevatedCard
@@ -43,6 +44,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalContext
@@ -102,6 +104,10 @@ fun GroupDetailScreen(
     var showDeleteDialog by remember { mutableStateOf(false) }
     var activeDialog by remember { mutableStateOf<GroupLimitDialogType?>(null) }
     val toast = remember(context) { { message: String -> context.showShortToast(message) } }
+    val groupMemberPickerDisabled = shouldDisableGroupMemberPicker(
+        strictEnabled = uiState.strictEnabled,
+        allAppsEnabled = uiState.allAppsTargetingEnabled
+    )
 
     LaunchedEffect(Unit) {
         viewModel.refresh()
@@ -254,9 +260,23 @@ fun GroupDetailScreen(
                 }
 
                 item {
+                    val blockConfigured = uiState.hasScheduleBlock
+                    val blockActive = uiState.scheduleEnabled
+                    val scheduleControlsAlpha = if (blockActive) 1f else 0.55f
+                    val scheduleStatusLabel = when {
+                        blockActive -> "Active block"
+                        blockConfigured -> "Inactive block"
+                        else -> "No block configured"
+                    }
                     ElevatedCard(
                         modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
+                        colors = CardDefaults.elevatedCardColors(
+                            containerColor = if (blockConfigured && !blockActive) {
+                                MaterialTheme.colorScheme.surfaceVariant
+                            } else {
+                                MaterialTheme.colorScheme.surfaceContainerLow
+                            }
+                        )
                     ) {
                         Column(modifier = Modifier.padding(20.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -286,63 +306,85 @@ fun GroupDetailScreen(
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            if (uiState.scheduleEnabled) {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            AssistChip(
+                                onClick = { },
+                                label = { Text(scheduleStatusLabel) },
+                                colors = AssistChipDefaults.assistChipColors(
+                                    containerColor = if (blockActive) {
+                                        MaterialTheme.colorScheme.primaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.surfaceContainerHighest
+                                    },
+                                    labelColor = if (blockActive) {
+                                        MaterialTheme.colorScheme.onPrimaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    }
+                                )
+                            )
+                            if (blockConfigured) {
                                 Spacer(modifier = Modifier.height(16.dp))
-                                FlowRow(
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    scheduleDayLabels.forEachIndexed { index, label ->
-                                        FilterChip(
-                                            selected = uiState.scheduleDaysMask and (1 shl index) != 0,
+                                Column(modifier = Modifier.alpha(scheduleControlsAlpha)) {
+                                    FlowRow(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        scheduleDayLabels.forEachIndexed { index, label ->
+                                            FilterChip(
+                                                selected = uiState.scheduleDaysMask and (1 shl index) != 0,
+                                                enabled = blockActive,
+                                                onClick = {
+                                                    val isSelected = uiState.scheduleDaysMask and (1 shl index) != 0
+                                                    viewModel.updateScheduleDay(index, !isSelected)
+                                                    toast(
+                                                        if (isSelected) {
+                                                            "$label removed from schedule."
+                                                        } else {
+                                                            "$label added to schedule."
+                                                        }
+                                                    )
+                                                },
+                                                label = { Text(label) }
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(16.dp))
+                                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                        Button(
+                                            enabled = blockActive,
                                             onClick = {
-                                                val isSelected = uiState.scheduleDaysMask and (1 shl index) != 0
-                                                viewModel.updateScheduleDay(index, !isSelected)
-                                                toast(
-                                                    if (isSelected) {
-                                                        "$label removed from schedule."
-                                                    } else {
-                                                        "$label added to schedule."
-                                                    }
-                                                )
-                                            },
-                                            label = { Text(label) }
-                                        )
-                                    }
-                                }
-                                Spacer(modifier = Modifier.height(16.dp))
-                                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                    Button(
-                                        onClick = {
-                                            TimePickerDialog(
-                                                context,
-                                                { _, hour, minute ->
-                                                    viewModel.updateScheduleStart(hour, minute)
-                                                    toast("Start time set to ${minuteToTimeLabel(hour * 60 + minute)}.")
-                                                },
-                                                uiState.scheduleStartMinute / 60,
-                                                uiState.scheduleStartMinute % 60,
-                                                true
-                                            ).show()
+                                                TimePickerDialog(
+                                                    context,
+                                                    { _, hour, minute ->
+                                                        viewModel.updateScheduleStart(hour, minute)
+                                                        toast("Start time set to ${minuteToTimeLabel(hour * 60 + minute)}.")
+                                                    },
+                                                    uiState.scheduleStartMinute / 60,
+                                                    uiState.scheduleStartMinute % 60,
+                                                    true
+                                                ).show()
+                                            }
+                                        ) {
+                                            Text("Start ${minuteToTimeLabel(uiState.scheduleStartMinute)}")
                                         }
-                                    ) {
-                                        Text("Start ${minuteToTimeLabel(uiState.scheduleStartMinute)}")
-                                    }
-                                    Button(
-                                        onClick = {
-                                            TimePickerDialog(
-                                                context,
-                                                { _, hour, minute ->
-                                                    viewModel.updateScheduleEnd(hour, minute)
-                                                    toast("End time set to ${minuteToTimeLabel(hour * 60 + minute)}.")
-                                                },
-                                                uiState.scheduleEndMinute / 60,
-                                                uiState.scheduleEndMinute % 60,
-                                                true
-                                            ).show()
+                                        Button(
+                                            enabled = blockActive,
+                                            onClick = {
+                                                TimePickerDialog(
+                                                    context,
+                                                    { _, hour, minute ->
+                                                        viewModel.updateScheduleEnd(hour, minute)
+                                                        toast("End time set to ${minuteToTimeLabel(hour * 60 + minute)}.")
+                                                    },
+                                                    uiState.scheduleEndMinute / 60,
+                                                    uiState.scheduleEndMinute % 60,
+                                                    true
+                                                ).show()
+                                            }
+                                        ) {
+                                            Text("End ${minuteToTimeLabel(uiState.scheduleEndMinute)}")
                                         }
-                                    ) {
-                                        Text("End ${minuteToTimeLabel(uiState.scheduleEndMinute)}")
                                     }
                                 }
                             }
@@ -403,6 +445,46 @@ fun GroupDetailScreen(
                                     }
                                 )
                             }
+                            if (uiState.strictEnabled) {
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "All apps",
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Switch(
+                                        checked = uiState.allAppsTargetingEnabled,
+                                        onCheckedChange = { enabled ->
+                                            viewModel.toggleAllAppsTargeting(enabled)
+                                            toast(
+                                                if (enabled) {
+                                                    "All-apps schedule targeting enabled."
+                                                } else {
+                                                    "All-apps schedule targeting disabled."
+                                                }
+                                            )
+                                        }
+                                    )
+                                }
+                            }
+                            if (uiState.strictEnabled && uiState.allAppsTargetingEnabled) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = "During this schedule, all non-system launchable apps except protected and always-allowed apps will be blocked, including newly installed apps.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = "Selected group apps are preserved for limits and will be editable again after All apps is turned off.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                     }
                 }
@@ -453,7 +535,9 @@ fun GroupDetailScreen(
 
                 item {
                     ElevatedCard(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .alpha(if (groupMemberPickerDisabled) 0.55f else 1f),
                         colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
                     ) {
                         Column(modifier = Modifier.padding(20.dp)) {
@@ -464,14 +548,25 @@ fun GroupDetailScreen(
                                     fontWeight = FontWeight.SemiBold,
                                     modifier = Modifier.weight(1f)
                                 )
-                                IconButton(onClick = {
-                                    showAppPicker = true
-                                    toast("Selecting apps for this group.")
-                                }) {
+                                IconButton(
+                                    enabled = !groupMemberPickerDisabled,
+                                    onClick = {
+                                        showAppPicker = true
+                                        toast("Selecting apps for this group.")
+                                    }
+                                ) {
                                     Icon(Icons.Default.Add, contentDescription = "Manage apps")
                                 }
                             }
                             Spacer(modifier = Modifier.height(8.dp))
+                            if (groupMemberPickerDisabled) {
+                                Text(
+                                    text = "App selection is disabled while strict All apps schedule targeting is enabled.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                            }
                             if (uiState.memberPackages.isEmpty()) {
                                 Text(
                                     text = "No apps selected yet.",
@@ -486,6 +581,7 @@ fun GroupDetailScreen(
                                     uiState.memberPackages.forEach { packageName ->
                                         val label = uiState.availableApps.firstOrNull { it.packageName == packageName }?.label ?: packageName
                                         AssistChip(
+                                            enabled = !groupMemberPickerDisabled,
                                             onClick = {
                                                 showAppPicker = true
                                                 toast("Selecting apps for this group.")

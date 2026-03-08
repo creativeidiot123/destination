@@ -9,7 +9,6 @@ import com.ankit.destination.enforce.EnforcementExecutor
 import com.ankit.destination.enforce.PolicyApplyOrchestrator
 import com.ankit.destination.policy.FocusEventId
 import com.ankit.destination.policy.FocusLog
-import com.ankit.destination.policy.PackageResolver
 import com.ankit.destination.policy.PolicyEngine
 import com.ankit.destination.ui.invalidateInstalledAppOptionsCache
 
@@ -70,6 +69,11 @@ class PackageChangeReceiver : BroadcastReceiver() {
             val prefs = context.applicationContext.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
             prefs.edit().remove(PREF_RUNTIME_REGISTERED).apply()
             runtimeRegistered = false
+        }
+
+        fun clearPersistedState(context: Context) {
+            val prefs = context.applicationContext.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+            prefs.edit().clear().apply()
         }
     }
 
@@ -132,59 +136,16 @@ class PackageChangeReceiver : BroadcastReceiver() {
                     }
                     return@executeLatest
                 }
-
-                val resolver = PackageResolver(context)
-                val managedVpnPackage = engine.getManagedVpnPackage()
-                val alwaysAllowed = engine.getAlwaysAllowedApps()
-                val alwaysBlocked = engine.getAlwaysBlockedApps()
-                val allowlist = resolver.resolveAllowlist(
-                    userChosenEmergencyApps = engine.getEmergencyApps(),
-                    alwaysAllowedApps = alwaysAllowed
-                ).packages
-                var shouldEnforce = false
-
-                eventsToProcess.forEach { event ->
-                    val changedPackage = event.packageName
-                    if (event.action == Intent.ACTION_PACKAGE_REMOVED) {
-                        return@forEach
-                    }
-                    if (changedPackage == managedVpnPackage) {
-                        shouldEnforce = true
-                        return@forEach
-                    }
-                    if (alwaysAllowed.contains(changedPackage)) {
-                        return@forEach
-                    }
-                    val suspendable = resolver.filterSuspendable(setOf(changedPackage), allowlist)
-                    if (suspendable.isEmpty()) {
-                        return@forEach
-                    }
-
-                    if (alwaysBlocked.contains(changedPackage)) {
-                        shouldEnforce = true
-                        return@forEach
-                    }
-
-                    engine.onNewPackageInstalledDuringStrictSchedule(changedPackage)
-                    shouldEnforce = true
-                }
-
-                if (shouldEnforce) {
-                    val triggerLabel = eventsToProcess.joinToString(",") { "${it.action}:${it.packageName}" }
-                    PolicyApplyOrchestrator.requestApply(
-                        context = context,
-                        reason = "PackageChangeReceiver:$triggerLabel",
-                        onComplete = {
-                            eventsToProcess.forEach { event ->
-                                event.pendingResults.forEach { result -> runCatching { result.finish() } }
-                            }
+                val triggerLabel = eventsToProcess.joinToString(",") { "${it.action}:${it.packageName}" }
+                PolicyApplyOrchestrator.requestApply(
+                    context = context,
+                    reason = "PackageChangeReceiver:$triggerLabel",
+                    onComplete = {
+                        eventsToProcess.forEach { event ->
+                            event.pendingResults.forEach { result -> runCatching { result.finish() } }
                         }
-                    )
-                } else {
-                    eventsToProcess.forEach { event ->
-                        event.pendingResults.forEach { result -> runCatching { result.finish() } }
                     }
-                }
+                )
             } catch (t: Throwable) {
                 FocusLog.e(FocusEventId.STRICT_INSTALL_SUSPEND_FAIL, "Package change handling failed", t)
                 eventsToProcess.forEach { event ->

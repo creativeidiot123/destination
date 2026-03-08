@@ -14,13 +14,17 @@ import com.ankit.destination.data.EmergencyTargetType
 import com.ankit.destination.data.FocusDatabase
 import com.ankit.destination.data.GlobalControls
 import com.ankit.destination.data.GroupEmergencyConfig
+import com.ankit.destination.data.HiddenApp
 import com.ankit.destination.data.GroupLimit
+import com.ankit.destination.data.GroupTargetMode
 import com.ankit.destination.data.ScheduleBlockGroup
 import com.ankit.destination.enforce.AccessibilityStatusMonitor
+import com.ankit.destination.packages.PackageChangeReceiver
 import com.ankit.destination.schedule.AlarmScheduler
 import com.ankit.destination.schedule.AlarmSchedulerClient
 import com.ankit.destination.schedule.ScheduleDecision
 import com.ankit.destination.schedule.ScheduleEvaluator
+import com.ankit.destination.security.AppLockManager
 import com.ankit.destination.usage.UsageAccess
 import com.ankit.destination.usage.UsageAccessMonitor
 import com.ankit.destination.usage.UsageWindow
@@ -42,7 +46,7 @@ class PolicyEngine private constructor(
     private val store = PolicyStore(appContext)
     private val db by lazy { FocusDatabase.get(appContext) }
     private val evaluator = PolicyEvaluator(resolver, appContext.packageName)
-    private val applier = PolicyApplier(facade)
+    private val applier = PolicyApplier(facade, resolver)
     @Volatile private var policyControlsCache: PolicyControls? = null
 
     constructor(context: Context) : this(
@@ -172,6 +176,16 @@ class PolicyEngine private constructor(
 
     suspend fun getAlwaysBlockedAppsAsync(): Set<String> = loadPolicyControlsAsync().alwaysBlockedApps
 
+    fun getHiddenApps(): List<HiddenApp> = loadPolicyControls().hiddenApps
+
+    suspend fun getHiddenAppsAsync(): List<HiddenApp> = loadPolicyControlsAsync().hiddenApps
+
+    internal suspend fun getAppProtectionSnapshotAsync(
+        usageAccessComplianceState: UsageAccessComplianceState = currentUsageAccessComplianceState()
+    ): AppProtectionSnapshot {
+        return buildAppProtectionSnapshot(loadPolicyControlsAsync(), usageAccessComplianceState)
+    }
+
     fun getUninstallProtectedApps(): Set<String> = loadPolicyControls().uninstallProtectedApps
 
     suspend fun getUninstallProtectedAppsAsync(): Set<String> = loadPolicyControlsAsync().uninstallProtectedApps
@@ -188,7 +202,7 @@ class PolicyEngine private constructor(
         val normalized = packageName.trim()
         if (normalized.isBlank()) return
         withContext(Dispatchers.IO) {
-            db.budgetDao().addAlwaysAllowedExclusive(normalized)
+            db.budgetDao().upsertAlwaysAllowed(com.ankit.destination.data.AlwaysAllowedApp(normalized))
         }
         invalidatePolicyControlsCache()
     }
@@ -208,7 +222,7 @@ class PolicyEngine private constructor(
 
     fun addAlwaysBlockedApp(packageName: String) {
         val normalized = packageName.trim()
-        if (normalized.isBlank() || getAlwaysAllowedApps().contains(normalized)) return
+        if (normalized.isBlank()) return
         runBlocking {
             addAlwaysBlockedAppAsync(normalized)
         }
@@ -216,9 +230,9 @@ class PolicyEngine private constructor(
 
     suspend fun addAlwaysBlockedAppAsync(packageName: String) {
         val normalized = packageName.trim()
-        if (normalized.isBlank() || loadPolicyControlsAsync().alwaysAllowedApps.contains(normalized)) return
+        if (normalized.isBlank()) return
         withContext(Dispatchers.IO) {
-            db.budgetDao().addAlwaysBlockedExclusive(normalized)
+            db.budgetDao().upsertAlwaysBlocked(com.ankit.destination.data.AlwaysBlockedApp(normalized))
         }
         invalidatePolicyControlsCache()
     }
@@ -234,6 +248,35 @@ class PolicyEngine private constructor(
             db.budgetDao().deleteAlwaysBlocked(packageName.trim())
         }
         invalidatePolicyControlsCache()
+    }
+
+    suspend fun addHiddenAppAsync(packageName: String, locked: Boolean = false) {
+        val normalized = packageName.trim()
+        if (normalized.isBlank()) return
+        withContext(Dispatchers.IO) {
+            db.budgetDao().upsertHiddenApp(HiddenApp(packageName = normalized, locked = locked))
+        }
+        invalidatePolicyControlsCache()
+    }
+
+    suspend fun removeHiddenAppAsync(packageName: String): Boolean {
+        val normalized = packageName.trim()
+        if (normalized.isBlank()) return false
+        val removed = withContext(Dispatchers.IO) {
+            ensureDefaultHiddenAppsSeededLocked()
+            val hidden = db.budgetDao().getHiddenApps()
+                .firstOrNull { it.packageName == normalized }
+                ?: return@withContext false
+            if (hidden.locked) {
+                return@withContext false
+            }
+            db.budgetDao().deleteHiddenApp(normalized)
+            true
+        }
+        if (removed) {
+            invalidatePolicyControlsCache()
+        }
+        return removed
     }
 
     fun addUninstallProtectedApp(packageName: String) {
@@ -359,7 +402,14 @@ class PolicyEngine private constructor(
             val cleanState = evaluator.evaluate(
                 mode = ModeState.NORMAL,
                 emergencyApps = cleanEmergencyApps,
-                alwaysAllowedApps = emptySet(),
+                protectionSnapshot = AppProtectionSnapshot(
+                    allowlistedPackages = emptySet(),
+                    hiddenPackages = emptySet(),
+                    lockedHiddenPackages = emptySet(),
+                    runtimeExemptPackages = emptySet(),
+                    runtimeExemptionReasons = emptyMap(),
+                    hardProtectedPackages = emptySet()
+                ),
                 alwaysBlockedApps = emptySet(),
                 strictInstallBlockedPackages = emptySet(),
                 uninstallProtectedApps = emptySet(),
@@ -380,8 +430,10 @@ class PolicyEngine private constructor(
             )
             val outcome = runCatching {
                 store.resetForFreshStart()
+                AppLockManager(appContext).clearAll()
                 invalidatePolicyControlsCache()
                 VpnStatusStore(appContext).clear()
+                PackageChangeReceiver.clearPersistedState(appContext)
                 FocusLog.clearHistory(appContext)
                 FocusLog.w(
                     appContext,
@@ -487,7 +539,7 @@ class PolicyEngine private constructor(
         val state = evaluator.evaluate(
             mode = store.getDesiredMode(),
             emergencyApps = getEmergencyApps(),
-            alwaysAllowedApps = external.policyControls.alwaysAllowedApps,
+            protectionSnapshot = external.protectionSnapshot,
             alwaysBlockedApps = external.policyControls.alwaysBlockedInstalledPackages,
             strictInstallBlockedPackages = external.strictInstallBlockedPackages,
             uninstallProtectedApps = external.policyControls.uninstallProtectedApps,
@@ -512,7 +564,7 @@ class PolicyEngine private constructor(
         val expected = evaluator.evaluate(
             mode = desiredMode,
             emergencyApps = getEmergencyApps(),
-            alwaysAllowedApps = external.policyControls.alwaysAllowedApps,
+            protectionSnapshot = external.protectionSnapshot,
             alwaysBlockedApps = external.policyControls.alwaysBlockedInstalledPackages,
             strictInstallBlockedPackages = external.strictInstallBlockedPackages,
             uninstallProtectedApps = external.policyControls.uninstallProtectedApps,
@@ -595,7 +647,7 @@ class PolicyEngine private constructor(
             domainRuleCount = VpnStatusStore(appContext).getDomainRuleCount(),
             currentLockReason = store.getCurrentLockReason(),
             emergencyApps = getEmergencyApps(),
-            allowlistReasons = store.getLastAllowlistReasons(),
+            allowlistReasons = expected.allowlistReasons,
             alwaysAllowedApps = external.policyControls.alwaysAllowedApps,
             alwaysBlockedApps = external.policyControls.alwaysBlockedApps,
             uninstallProtectedApps = external.policyControls.uninstallProtectedApps,
@@ -605,7 +657,8 @@ class PolicyEngine private constructor(
                 nowMs = nowMs,
                 expected = expected,
                 external = external,
-                scheduleBlockedPackages = scheduleBlockedPackages
+                scheduleBlockedPackages = scheduleBlockedPackages,
+                protectionSnapshot = external.protectionSnapshot
             )
         )
     }
@@ -626,13 +679,14 @@ class PolicyEngine private constructor(
             } else if (!store.isScheduleStrictComputed()) {
                 return false
             }
+            val usageAccessComplianceState = currentUsageAccessComplianceState()
             val controls = loadPolicyControls()
-            if (controls.alwaysAllowedApps.contains(packageName)) return false
-            val allowlist = resolver.resolveAllowlist(
-                userChosenEmergencyApps = getEmergencyApps(),
-                alwaysAllowedApps = controls.alwaysAllowedApps
-            ).packages
-            val suspendable = resolver.filterSuspendable(setOf(packageName), allowlist)
+            val protectionSnapshot = buildAppProtectionSnapshot(controls, usageAccessComplianceState)
+            if (!protectionSnapshot.isEligibleForAllAppsExpansion(packageName)) return false
+            val suspendable = resolver.filterSuspendable(
+                packages = setOf(packageName),
+                allowlist = protectionSnapshot.fullyExemptPackages
+            )
             if (suspendable.isEmpty()) return false
             store.addStrictInstallSuspendedPackage(packageName)
             FocusLog.i(FocusEventId.STRICT_INSTALL_SUSPEND, "Strict schedule staged suspend pkg=$packageName")
@@ -666,7 +720,7 @@ class PolicyEngine private constructor(
         val state = evaluator.evaluate(
             mode = normalizedTargetMode,
             emergencyApps = emergencyApps,
-            alwaysAllowedApps = external.policyControls.alwaysAllowedApps,
+            protectionSnapshot = external.protectionSnapshot,
             alwaysBlockedApps = external.policyControls.alwaysBlockedInstalledPackages,
             strictInstallBlockedPackages = external.strictInstallBlockedPackages,
             uninstallProtectedApps = external.policyControls.uninstallProtectedApps,
@@ -734,7 +788,7 @@ class PolicyEngine private constructor(
         val rollbackState = evaluator.evaluate(
             mode = rollbackMode,
             emergencyApps = emergencyApps,
-            alwaysAllowedApps = external.policyControls.alwaysAllowedApps,
+            protectionSnapshot = external.protectionSnapshot,
             alwaysBlockedApps = external.policyControls.alwaysBlockedInstalledPackages,
             strictInstallBlockedPackages = external.strictInstallBlockedPackages,
             uninstallProtectedApps = external.policyControls.uninstallProtectedApps,
@@ -772,7 +826,7 @@ class PolicyEngine private constructor(
         val state = evaluator.evaluate(
             mode = stateMode,
             emergencyApps = emergencyApps,
-            alwaysAllowedApps = external.policyControls.alwaysAllowedApps,
+            protectionSnapshot = external.protectionSnapshot,
             alwaysBlockedApps = external.policyControls.alwaysBlockedInstalledPackages,
             strictInstallBlockedPackages = external.strictInstallBlockedPackages,
             uninstallProtectedApps = external.policyControls.uninstallProtectedApps,
@@ -898,10 +952,8 @@ class PolicyEngine private constructor(
 
     private fun orchestrateCurrentPolicy(now: ZonedDateTime = clock.now()): OrchestratedState {
         val policyControls = loadPolicyControls()
-        val allowlistPackages = resolver.resolveAllowlist(
-            userChosenEmergencyApps = getEmergencyApps(),
-            alwaysAllowedApps = policyControls.alwaysAllowedApps
-        ).packages
+        val installedTargetablePackages = resolver.getInstalledTargetablePackages()
+        val hardProtectedPackages = resolver.getHardProtectedPackages()
         val loaded = runBlocking {
             withContext(Dispatchers.IO) {
                 val budgetDao = db.budgetDao()
@@ -940,6 +992,7 @@ class PolicyEngine private constructor(
                 groupId = limit.groupId,
                 priorityIndex = limit.priorityIndex,
                 strictEnabled = limit.strictEnabled,
+                targetMode = resolveScheduleTargetMode(limit),
                 dailyLimitMs = limit.dailyLimitMs,
                 hourlyLimitMs = limit.hourlyLimitMs,
                 opensPerDay = limit.opensPerDay,
@@ -960,7 +1013,12 @@ class PolicyEngine private constructor(
             groupInputs = groupInputs
         )
         val scheduleState = baseScheduleState.copy(strictActive = strictActive)
-        val strictInstallBlocked = if (strictActive) {
+        val activeAllAppsScheduleGroupIds = groupInputs
+            .asSequence()
+            .filter { it.scheduleBlocked && it.targetMode == GroupTargetMode.ALL_APPS }
+            .map { it.groupId }
+            .toSet()
+        val strictInstallBlocked = if (strictActive && activeAllAppsScheduleGroupIds.isEmpty()) {
             store.getStrictInstallSuspendedPackages()
         } else {
             emptySet()
@@ -980,6 +1038,8 @@ class PolicyEngine private constructor(
             )
         }
         val nowMs = now.toInstant().toEpochMilli()
+        val usageAccessComplianceState = currentUsageAccessComplianceState(usageSnapshot.usageAccessGranted)
+        val protectionSnapshot = buildAppProtectionSnapshot(policyControls, usageAccessComplianceState)
         val dayKey = UsageWindow.dayKey(now)
         val mergedEmergencyStates = EmergencyStateMerger.merge(
             dayKey = dayKey,
@@ -1002,7 +1062,10 @@ class PolicyEngine private constructor(
             appPolicies = appInputs,
             emergencyStates = emergencyStates,
             strictInstallBlockedPackages = strictInstallBlocked,
-            alwaysAllowedPackages = allowlistPackages
+            fullyExemptPackages = protectionSnapshot.fullyExemptPackages,
+            allAppsExcludedPackages = protectionSnapshot.allAppsExcludedPackages,
+            installedTargetablePackages = installedTargetablePackages,
+            hardProtectedPackages = hardProtectedPackages
         )
         val budgetNextCheckAtMs = computeClosestBudgetCheckAtMs(
             nowMs = nowMs,
@@ -1010,7 +1073,7 @@ class PolicyEngine private constructor(
             groupPolicies = groupInputs,
             appPolicies = appInputs,
             usageInputs = usageSnapshot.usageInputs,
-            allowlistPackages = allowlistPackages,
+            fullyExemptPackages = protectionSnapshot.fullyExemptPackages,
             emergencyStates = emergencyStates
         )
         val emergencyUnlockExpiresAtMs = emergencyStates
@@ -1027,7 +1090,7 @@ class PolicyEngine private constructor(
         return OrchestratedState(
             nowMs = nowMs,
             usageAccessGranted = usageSnapshot.usageAccessGranted,
-            usageAccessComplianceState = currentUsageAccessComplianceState(usageSnapshot.usageAccessGranted),
+            usageAccessComplianceState = usageAccessComplianceState,
             nextCheckAtMs = budgetNextCheckAtMs,
             nextPolicyWakeAtMs = nextPolicyWake.atMs,
             nextPolicyWakeReason = nextPolicyWake.reason,
@@ -1036,19 +1099,18 @@ class PolicyEngine private constructor(
             scheduledAppPackages = scheduledAppPackages,
             scheduleState = scheduleState,
             policyControls = policyControls,
+            protectionSnapshot = protectionSnapshot,
+            installedTargetablePackages = installedTargetablePackages,
+            hardProtectedPackages = hardProtectedPackages,
             evaluation = evaluation
         )
     }
 
     private fun persistComputedState(orchestrated: OrchestratedState) {
-        val allowlistPackages = resolver.resolveAllowlist(
-            userChosenEmergencyApps = getEmergencyApps(),
-            alwaysAllowedApps = orchestrated.policyControls.alwaysAllowedApps
-        ).packages
         val suspendPlan = computeSuspendPlan(
             evaluation = orchestrated.evaluation,
             alwaysBlockedPackages = orchestrated.policyControls.alwaysBlockedInstalledPackages,
-            allowlistPackages = allowlistPackages
+            fullyExemptPackages = orchestrated.protectionSnapshot.fullyExemptPackages
         )
         store.setComputedPolicyState(
             scheduleLockComputed = orchestrated.scheduleState.active,
@@ -1068,7 +1130,8 @@ class PolicyEngine private constructor(
             nextPolicyWakeReason = orchestrated.nextPolicyWakeReason,
             primaryReasonByPackage = suspendPlan.primaryReasons,
             blockReasonsByPackage = suspendPlan.blockReasonsByPackage,
-            clearStrictInstallSuspendedPackages = !orchestrated.scheduleState.strictActive
+            clearStrictInstallSuspendedPackages = !orchestrated.scheduleState.strictActive ||
+                orchestrated.evaluation.activeAllAppsGroupIds.isNotEmpty()
         )
         if (
             orchestrated.usageAccessComplianceState.lockdownActive &&
@@ -1083,30 +1146,37 @@ class PolicyEngine private constructor(
         FocusLog.i(
             appContext,
             FocusEventId.POLICY_STATE_COMPUTED,
-            "scheduleLock=${orchestrated.scheduleState.active} strict=${orchestrated.scheduleState.strictActive} scheduledGroups=${orchestrated.scheduleState.blockedGroupIds.size} scheduledApps=${orchestrated.scheduleState.blockedAppPackages.size} blockedPackages=${orchestrated.evaluation.effectiveBlockedPackages.size} blockedGroups=${orchestrated.evaluation.effectiveBlockedGroupIds.size} usageAccess=${orchestrated.usageAccessGranted} nextWake=${orchestrated.nextPolicyWakeReason}@${orchestrated.nextPolicyWakeAtMs}"
+            "scheduleLock=${orchestrated.scheduleState.active} strict=${orchestrated.scheduleState.strictActive} scheduledGroups=${orchestrated.scheduleState.blockedGroupIds.size} scheduledApps=${orchestrated.scheduleState.blockedAppPackages.size} activeAllAppsGroups=${orchestrated.evaluation.activeAllAppsGroupIds.size} targetable=${orchestrated.installedTargetablePackages.size} protected=${orchestrated.hardProtectedPackages.size} allowlisted=${orchestrated.policyControls.alwaysAllowedApps.size} hidden=${orchestrated.policyControls.hiddenApps.size} blockedPackages=${orchestrated.evaluation.effectiveBlockedPackages.size} blockedGroups=${orchestrated.evaluation.effectiveBlockedGroupIds.size} usageAccess=${orchestrated.usageAccessGranted} nextWake=${orchestrated.nextPolicyWakeReason}@${orchestrated.nextPolicyWakeAtMs}"
         )
+        if (orchestrated.evaluation.activeAllAppsGroupIds.isNotEmpty()) {
+            FocusLog.i(
+                appContext,
+                FocusEventId.GROUP_EVAL,
+                "Active all-apps groups=${orchestrated.evaluation.activeAllAppsGroupIds.joinToString(",")}"
+            )
+        }
     }
 
     private fun computeSuspendPlan(
         evaluation: EffectivePolicyEvaluation,
         alwaysBlockedPackages: Set<String>,
-        allowlistPackages: Set<String>
+        fullyExemptPackages: Set<String>
     ): SuspendPlan {
         val budgetBlockedSuspendable = resolver.filterSuspendable(
             packages = evaluation.effectiveBlockedPackages,
-            allowlist = allowlistPackages
+            allowlist = fullyExemptPackages
         )
         val scheduleBlockedSuspendable = resolver.filterSuspendable(
             packages = evaluation.scheduledBlockedPackages,
-            allowlist = allowlistPackages
+            allowlist = fullyExemptPackages
         )
         val alwaysBlockedSuspendable = resolver.filterSuspendable(
             packages = alwaysBlockedPackages,
-            allowlist = allowlistPackages
+            allowlist = fullyExemptPackages
         )
         val strictInstallSuspendable = resolver.filterSuspendable(
             packages = evaluation.strictInstallBlockedPackages,
-            allowlist = allowlistPackages
+            allowlist = fullyExemptPackages
         )
         val suspendableSet = linkedSetOf<String>().apply {
             addAll(budgetBlockedSuspendable)
@@ -1144,6 +1214,13 @@ class PolicyEngine private constructor(
             }
         }
         val immutableReasonMap = fullReasons.mapValues { it.value.toSet() }
+        val multiReasonPackages = immutableReasonMap.filterValues { it.size > 1 }
+        if (multiReasonPackages.isNotEmpty()) {
+            FocusLog.d(
+                FocusEventId.SUSPEND_TARGET,
+                "packagesWithMultipleReasons=${multiReasonPackages.size}: ${multiReasonPackages.keys.joinToString(",")}"
+            )
+        }
         return SuspendPlan(
             scheduleBlockedPackages = scheduleBlockedSuspendable,
             suspendTargets = immutableReasonMap.keys.toSet(),
@@ -1178,11 +1255,8 @@ class PolicyEngine private constructor(
 
     private fun computeExternalState(nowMs: Long = clock.nowMs()): ExternalState {
         val policyControls = loadPolicyControls()
-        val allowlistPackages = resolver.resolveAllowlist(
-            userChosenEmergencyApps = getEmergencyApps(),
-            alwaysAllowedApps = policyControls.alwaysAllowedApps
-        ).packages
         val usageAccessComplianceState = currentUsageAccessComplianceState()
+        val protectionSnapshot = buildAppProtectionSnapshot(policyControls, usageAccessComplianceState)
         val scheduleComputed = store.isScheduleLockComputed()
         val strictActive = store.isScheduleStrictComputed()
         val strictInstallBlocked = if (strictActive) {
@@ -1200,7 +1274,7 @@ class PolicyEngine private constructor(
         )
         val budgetBlocked = resolver.filterSuspendable(
             packages = budgetBlockedCandidates,
-            allowlist = allowlistPackages
+            allowlist = protectionSnapshot.fullyExemptPackages
         )
         val primaryReason = store.getPrimaryReasonByPackage().ifEmpty { computePrimaryReasonByPackage(
             alwaysBlocked = policyControls.alwaysBlockedInstalledPackages,
@@ -1249,6 +1323,7 @@ class PolicyEngine private constructor(
             touchGrassBreakActive = false,
             lockReason = lockReason,
             policyControls = policyControls,
+            protectionSnapshot = protectionSnapshot,
             primaryReasonByPackage = primaryReason,
             blockReasonsByPackage = filteredReasonSets,
             usageAccessComplianceState = usageAccessComplianceState
@@ -1259,7 +1334,8 @@ class PolicyEngine private constructor(
         nowMs: Long,
         expected: PolicyState,
         external: ExternalState,
-        scheduleBlockedPackages: Set<String>
+        scheduleBlockedPackages: Set<String>,
+        protectionSnapshot: AppProtectionSnapshot
     ): List<PackageDiagnostics> {
         val strictInstallStored = store.getStrictInstallSuspendedPackages()
         val candidatePackages = linkedSetOf<String>().apply {
@@ -1269,6 +1345,10 @@ class PolicyEngine private constructor(
             addAll(scheduleBlockedPackages)
             addAll(external.strictInstallBlockedPackages)
             addAll(external.policyControls.alwaysBlockedInstalledPackages)
+            addAll(protectionSnapshot.allowlistedPackages)
+            addAll(protectionSnapshot.hiddenPackages)
+            addAll(protectionSnapshot.runtimeExemptPackages)
+            addAll(protectionSnapshot.hardProtectedPackages)
         }
         return candidatePackages
             .asSequence()
@@ -1301,13 +1381,18 @@ class PolicyEngine private constructor(
                 }.toSet()
                 val disposition = if (packageName in expected.suspendTargets) {
                     PackageDiagnosticsDisposition.SUSPEND_TARGET
+                } else if (protectionSnapshot.isHidden(packageName)) {
+                    PackageDiagnosticsDisposition.HIDDEN
+                } else if (protectionSnapshot.isAllowlisted(packageName)) {
+                    PackageDiagnosticsDisposition.ALLOWLIST_EXCLUDED
+                } else if (protectionSnapshot.isRuntimeExempt(packageName)) {
+                    PackageDiagnosticsDisposition.RUNTIME_EXEMPT
+                } else if (protectionSnapshot.isCoreProtected(packageName)) {
+                    PackageDiagnosticsDisposition.PROTECTED
+                } else if (resolver.isPackageInstalled(packageName)) {
+                    PackageDiagnosticsDisposition.ELIGIBLE_NOT_ACTIVE
                 } else {
-                    when (resolver.suspendabilityStatus(packageName, expected.lockTaskAllowlist)) {
-                        SuspendabilityStatus.SUSPENDABLE -> PackageDiagnosticsDisposition.ELIGIBLE_NOT_ACTIVE
-                        SuspendabilityStatus.ALLOWLISTED -> PackageDiagnosticsDisposition.ALLOWLISTED
-                        SuspendabilityStatus.PROTECTED -> PackageDiagnosticsDisposition.PROTECTED
-                        SuspendabilityStatus.NOT_INSTALLED -> PackageDiagnosticsDisposition.NOT_INSTALLED
-                    }
+                    PackageDiagnosticsDisposition.NOT_INSTALLED
                 }
                 val primaryReason = expected.primaryReasonByPackage[packageName]
                     ?: external.primaryReasonByPackage[packageName]
@@ -1318,7 +1403,9 @@ class PolicyEngine private constructor(
                     activeReasons = activeReasons,
                     primaryReason = primaryReason,
                     disposition = disposition,
-                    allowlistReason = expected.allowlistReasons[packageName],
+                    allowlistReason = protectionSnapshot.allAppsExclusionReason(packageName),
+                    protectionReason = protectionSnapshot.manualPolicyIneligibilityReason(packageName),
+                    hiddenLocked = protectionSnapshot.isHiddenLocked(packageName),
                     fromStrictInstallSuspended = packageName in strictInstallStored,
                     nextPotentialClearEvent = describeNextPotentialClearEvent(
                         nowMs = nowMs,
@@ -1341,17 +1428,20 @@ class PolicyEngine private constructor(
         scheduleNextTransitionAtMs: Long?,
         budgetNextCheckAtMs: Long?
     ): String {
-        if (disposition == PackageDiagnosticsDisposition.ALLOWLISTED) {
-            return "Already filtered by allowlist"
-        }
-        if (disposition == PackageDiagnosticsDisposition.ELIGIBLE_NOT_ACTIVE) {
-            return "Currently not targeted; next policy recompute may reactivate it"
-        }
-        if (disposition == PackageDiagnosticsDisposition.PROTECTED) {
-            return "Already filtered by protected-package rules"
-        }
-        if (disposition == PackageDiagnosticsDisposition.NOT_INSTALLED) {
-            return "Package is not installed; next install + policy recompute decides state"
+        when (disposition) {
+            PackageDiagnosticsDisposition.ALLOWLIST_EXCLUDED ->
+                return "Excluded from all-apps expansion until removed from Allowlist"
+            PackageDiagnosticsDisposition.HIDDEN ->
+                return "Hidden apps are excluded from normal policy paths until removed from Hidden Apps"
+            PackageDiagnosticsDisposition.RUNTIME_EXEMPT ->
+                return "Runtime exemption remains until the recovery/protected condition clears"
+            PackageDiagnosticsDisposition.PROTECTED ->
+                return "Core protected package rules keep this app outside normal targeting"
+            PackageDiagnosticsDisposition.ELIGIBLE_NOT_ACTIVE ->
+                return "Currently not targeted; next policy recompute may reactivate it"
+            PackageDiagnosticsDisposition.NOT_INSTALLED ->
+                return "Package is not installed; next install and policy recompute decide state"
+            PackageDiagnosticsDisposition.SUSPEND_TARGET -> Unit
         }
         val normalizedPrimary = primaryReason.orEmpty().uppercase()
         val normalizedReasons = activeReasons.map { it.uppercase() }
@@ -1397,6 +1487,7 @@ class PolicyEngine private constructor(
         val touchGrassBreakActive: Boolean,
         val lockReason: String?,
         val policyControls: PolicyControls,
+        val protectionSnapshot: AppProtectionSnapshot,
         val primaryReasonByPackage: Map<String, String>,
         val blockReasonsByPackage: Map<String, Set<String>>,
         val usageAccessComplianceState: UsageAccessComplianceState
@@ -1410,6 +1501,7 @@ class PolicyEngine private constructor(
     private data class PolicyControls(
         val globalControls: GlobalControls,
         val alwaysAllowedApps: Set<String>,
+        val hiddenApps: List<HiddenApp>,
         val alwaysBlockedApps: Set<String>,
         val alwaysBlockedInstalledPackages: Set<String>,
         val uninstallProtectedApps: Set<String>
@@ -1445,6 +1537,9 @@ class PolicyEngine private constructor(
         val scheduledAppPackages: Set<String>,
         val scheduleState: LiveScheduleState,
         val policyControls: PolicyControls,
+        val protectionSnapshot: AppProtectionSnapshot,
+        val installedTargetablePackages: Set<String>,
+        val hardProtectedPackages: Set<String>,
         val evaluation: EffectivePolicyEvaluation
     )
 
@@ -1474,13 +1569,11 @@ class PolicyEngine private constructor(
         policyControlsCache?.let { return it }
         val loaded = withContext(Dispatchers.IO) {
             val dao = db.budgetDao()
+            ensureDefaultHiddenAppsSeededLocked(dao)
             val global = dao.getGlobalControls() ?: GlobalControls()
-            val alwaysAllowed = normalizeConfiguredPackages(
-                packages = dao.getAlwaysAllowedPackages(),
-                implicitPackages = setOf(appContext.packageName)
-            )
+            val alwaysAllowed = normalizeConfiguredPackages(dao.getAlwaysAllowedPackages())
+            val hiddenApps = dao.getHiddenApps()
             val alwaysBlocked = normalizeConfiguredPackages(dao.getAlwaysBlockedPackages())
-                .filterNot(alwaysAllowed::contains)
                 .toCollection(linkedSetOf())
             val uninstallProtected = normalizeConfiguredPackages(
                 packages = dao.getUninstallProtectedPackages(),
@@ -1490,6 +1583,7 @@ class PolicyEngine private constructor(
             PolicyControls(
                 globalControls = global,
                 alwaysAllowedApps = alwaysAllowed,
+                hiddenApps = hiddenApps,
                 alwaysBlockedApps = alwaysBlocked,
                 alwaysBlockedInstalledPackages = installedAlwaysBlocked,
                 uninstallProtectedApps = uninstallProtected
@@ -1503,12 +1597,64 @@ class PolicyEngine private constructor(
         policyControlsCache = null
     }
 
+    private suspend fun ensureDefaultHiddenAppsSeededLocked() {
+        ensureDefaultHiddenAppsSeededLocked(db.budgetDao())
+    }
+
+    private suspend fun ensureDefaultHiddenAppsSeededLocked(dao: com.ankit.destination.data.BudgetDao) {
+        DefaultHiddenAppResolver(appContext)
+            .resolveLockedHiddenPackages()
+            .forEach { packageName ->
+                dao.upsertHiddenApp(HiddenApp(packageName = packageName, locked = true))
+            }
+    }
+
+    private fun buildAppProtectionSnapshot(
+        policyControls: PolicyControls,
+        usageAccessComplianceState: UsageAccessComplianceState
+    ): AppProtectionSnapshot {
+        val runtimeAllowlist = if (usageAccessComplianceState.lockdownActive) {
+            AllowlistResolution(
+                packages = usageAccessComplianceState.recoveryAllowlist,
+                reasons = usageAccessComplianceState.recoveryAllowlist.associateWith { "usage access recovery" }
+            )
+        } else {
+            resolver.resolveRuntimeAllowlist(getEmergencyApps())
+        }
+        val hiddenPackages = policyControls.hiddenApps
+            .map { it.packageName.trim() }
+            .filter(String::isNotBlank)
+            .toSet()
+        val lockedHiddenPackages = policyControls.hiddenApps
+            .asSequence()
+            .filter { it.locked }
+            .map { it.packageName.trim() }
+            .filter(String::isNotBlank)
+            .toSet()
+        return AppProtectionSnapshot(
+            allowlistedPackages = policyControls.alwaysAllowedApps,
+            hiddenPackages = hiddenPackages,
+            lockedHiddenPackages = lockedHiddenPackages,
+            runtimeExemptPackages = runtimeAllowlist.packages,
+            runtimeExemptionReasons = runtimeAllowlist.reasons,
+            hardProtectedPackages = resolver.getHardProtectedPackages()
+        )
+    }
+
     private fun GroupEmergencyConfig?.toEmergencyConfig(): EmergencyConfigInput {
         return EmergencyConfigInput(
             enabled = this?.enabled == true,
             unlocksPerDay = this?.unlocksPerDay ?: 0,
             minutesPerUnlock = this?.minutesPerUnlock ?: 0
         )
+    }
+
+    private fun resolveScheduleTargetMode(limit: GroupLimit): GroupTargetMode {
+        return if (limit.strictEnabled) {
+            GroupTargetMode.fromStorage(limit.scheduleTargetMode)
+        } else {
+            GroupTargetMode.SELECTED_APPS
+        }
     }
 
 
@@ -1677,7 +1823,7 @@ class PolicyEngine private constructor(
             groupPolicies: List<GroupPolicyInput>,
             appPolicies: List<AppPolicyInput>,
             usageInputs: UsageInputs,
-            allowlistPackages: Set<String>,
+            fullyExemptPackages: Set<String>,
             emergencyStates: List<EmergencyStateInput>
         ): Long? {
             val candidates = mutableListOf<Long>()
@@ -1686,7 +1832,7 @@ class PolicyEngine private constructor(
             }
             groupPolicies.forEach { group ->
                 if (group.scheduleBlocked) return@forEach
-                val eligibleMembers = group.members.filterNot(allowlistPackages::contains)
+                val eligibleMembers = group.members.filterNot(fullyExemptPackages::contains)
                 if (eligibleMembers.isEmpty()) return@forEach
                 val usedDay = eligibleMembers.sumOf { usageInputs.usedTodayMs[it] ?: 0L }
                 val usedHour = eligibleMembers.sumOf { usageInputs.usedHourMs[it] ?: 0L }
@@ -1698,7 +1844,7 @@ class PolicyEngine private constructor(
                 }
             }
             appPolicies.forEach { policy ->
-                if (policy.scheduleBlocked || allowlistPackages.contains(policy.packageName)) return@forEach
+                if (policy.scheduleBlocked || fullyExemptPackages.contains(policy.packageName)) return@forEach
                 val usedDay = usageInputs.usedTodayMs[policy.packageName] ?: 0L
                 val usedHour = usageInputs.usedHourMs[policy.packageName] ?: 0L
                 if (policy.dailyLimitMs > 0L && usedDay < policy.dailyLimitMs) {

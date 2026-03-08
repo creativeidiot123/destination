@@ -9,6 +9,7 @@ import com.ankit.destination.policy.ModeState
 import com.ankit.destination.policy.PackageSuspendResult
 import com.ankit.destination.policy.PolicyApplier
 import com.ankit.destination.policy.PolicyState
+import com.ankit.destination.policy.ProtectedPackagesProvider
 import com.ankit.destination.policy.desiredUserControlDisabledPackages
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -65,6 +66,46 @@ class PolicyApplierLogicTest {
         )
     }
 
+    @Test
+    fun apply_skipsProtectedPackagesDuringSuspensionReconciliation() {
+        val facade = FakeDevicePolicyClient()
+        val applier = PolicyApplier(
+            facade = facade,
+            protectedPackagesProvider = object : ProtectedPackagesProvider {
+                override fun getHardProtectedPackages(): Set<String> = setOf("protected.app")
+                override fun isHardProtectedPackage(packageName: String): Boolean = packageName == "protected.app"
+            }
+        )
+
+        applier.apply(
+            state = policyState(
+                suspendTargets = setOf("protected.app", "normal.app"),
+                previouslySuspended = setOf("protected.app")
+            )
+        )
+
+        assertEquals(
+            listOf(SuspendCall(packages = listOf("normal.app"), suspended = true)),
+            facade.suspendCalls
+        )
+    }
+
+    @Test
+    fun apply_blanksDeviceOwnerLockScreenInfo_everyTime() {
+        val facade = FakeDevicePolicyClient()
+        val applier = PolicyApplier(facade)
+
+        val result = applier.apply(
+            state = policyState(
+                suspendTargets = emptySet(),
+                previouslySuspended = emptySet()
+            )
+        )
+
+        assertTrue(result.errors.isEmpty())
+        assertEquals(" ", facade.deviceOwnerLockScreenInfo)
+    }
+
     private fun policyState(
         suspendTargets: Set<String>,
         previouslySuspended: Set<String>
@@ -109,10 +150,14 @@ class PolicyApplierLogicTest {
         private var autoTimeRequired = false
         private var lockTaskPackages = emptyList<String>()
         private var lockTaskFeatures = 0
+        var deviceOwnerLockScreenInfo: CharSequence? = null
 
         override fun isAdminActive(): Boolean = true
         override fun isDeviceOwner(): Boolean = true
         override fun clearDeviceOwnerApp() = Unit
+        override fun setBlankDeviceOwnerLockScreenInfo() {
+            deviceOwnerLockScreenInfo = " "
+        }
         override fun setLockTaskPackages(packages: List<String>) {
             lockTaskPackages = packages
         }

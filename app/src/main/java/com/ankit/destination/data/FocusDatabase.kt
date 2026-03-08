@@ -21,9 +21,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         GlobalControls::class,
         AlwaysAllowedApp::class,
         AlwaysBlockedApp::class,
-        UninstallProtectedApp::class
+        UninstallProtectedApp::class,
+        HiddenApp::class
     ],
-    version = 12,
+    version = 14,
     exportSchema = false
 )
 abstract class FocusDatabase : RoomDatabase() {
@@ -57,7 +58,9 @@ abstract class FocusDatabase : RoomDatabase() {
                 MIGRATION_8_9,
                 MIGRATION_9_10,
                 MIGRATION_10_11,
-                MIGRATION_11_12
+                MIGRATION_11_12,
+                MIGRATION_12_13,
+                MIGRATION_13_14
             )
                 .build()
         }
@@ -418,6 +421,31 @@ abstract class FocusDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
                     "ALTER TABLE `global_controls` ADD COLUMN `disableSafeMode` INTEGER NOT NULL DEFAULT 0"
+                )
+            }
+        }
+
+        private val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    ALTER TABLE `group_limits`
+                    ADD COLUMN `scheduleTargetMode` TEXT NOT NULL DEFAULT 'SELECTED_APPS'
+                    """.trimIndent()
+                )
+            }
+        }
+
+        private val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `hidden_apps` (
+                        `packageName` TEXT NOT NULL,
+                        `locked` INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(`packageName`)
+                    )
+                    """.trimIndent()
                 )
             }
         }

@@ -80,6 +80,10 @@ class AppLockManager(context: Context) {
         prefs.edit().remove(KEY_SESSION_EXPIRY).apply()
     }
 
+    fun clearAll() {
+        prefs.edit().clear().commit()
+    }
+
     companion object {
         private const val PREFS_NAME = "admin_lock_store"
         private const val KEY_HASH = "hash"

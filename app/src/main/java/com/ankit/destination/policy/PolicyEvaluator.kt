@@ -9,7 +9,7 @@ internal class PolicyEvaluator(
     fun evaluate(
         mode: ModeState,
         emergencyApps: Set<String>,
-        alwaysAllowedApps: Set<String>,
+        protectionSnapshot: AppProtectionSnapshot,
         alwaysBlockedApps: Set<String>,
         strictInstallBlockedPackages: Set<String> = emptySet(),
         uninstallProtectedApps: Set<String>,
@@ -23,32 +23,35 @@ internal class PolicyEvaluator(
         touchGrassBreakActive: Boolean,
         usageAccessComplianceState: UsageAccessComplianceState
     ): PolicyState {
-        FocusLog.d(FocusEventId.POLICY_STATE_COMPUTED, "┌── PolicyEvaluator.evaluate() START ──")
-        FocusLog.d(FocusEventId.POLICY_STATE_COMPUTED, "│ mode=$mode emergencyApps=${emergencyApps.size} alwaysAllowed=${alwaysAllowedApps.size} alwaysBlocked=${alwaysBlockedApps.size}")
-        FocusLog.d(FocusEventId.POLICY_STATE_COMPUTED, "│ strictInstall=${strictInstallBlockedPackages.size} uninstallProtected=${uninstallProtectedApps.size} budgetBlocked=${budgetBlockedPackages.size}")
-        FocusLog.d(FocusEventId.POLICY_STATE_COMPUTED, "│ lockReason=$lockReason touchGrassBreak=$touchGrassBreakActive prevSuspended=${previouslySuspended.size}")
-        FocusLog.d(FocusEventId.USAGE_ACCESS_CHECK, "│ usageAccess: granted=${usageAccessComplianceState.usageAccessGranted} lockdownEligible=${usageAccessComplianceState.lockdownEligible} lockdownActive=${usageAccessComplianceState.lockdownActive}")
+        FocusLog.d(FocusEventId.POLICY_STATE_COMPUTED, "PolicyEvaluator.evaluate() start")
+        FocusLog.d(
+            FocusEventId.POLICY_STATE_COMPUTED,
+            "mode=$mode emergencyApps=${emergencyApps.size} allowlist=${protectionSnapshot.allowlistedPackages.size} hidden=${protectionSnapshot.hiddenPackages.size} alwaysBlocked=${alwaysBlockedApps.size}"
+        )
+        FocusLog.d(
+            FocusEventId.POLICY_STATE_COMPUTED,
+            "strictInstall=${strictInstallBlockedPackages.size} uninstallProtected=${uninstallProtectedApps.size} budgetBlocked=${budgetBlockedPackages.size}"
+        )
+        FocusLog.d(
+            FocusEventId.USAGE_ACCESS_CHECK,
+            "usageAccess granted=${usageAccessComplianceState.usageAccessGranted} lockdownEligible=${usageAccessComplianceState.lockdownEligible} lockdownActive=${usageAccessComplianceState.lockdownActive}"
+        )
 
         val effectiveMode = mode
         if (usageAccessComplianceState.lockdownActive) {
-            FocusLog.i(FocusEventId.USAGE_ACCESS_CHECK, "│ ⚠️ USAGE ACCESS RECOVERY LOCKDOWN ACTIVE — reason=${usageAccessComplianceState.reason}")
             val recoveryAllowlist = usageAccessComplianceState.recoveryAllowlist
-            FocusLog.d(FocusEventId.USAGE_ACCESS_CHECK, "│ recoveryAllowlist=${recoveryAllowlist.size}: ${recoveryAllowlist.joinToString(",")}")
             val recoverySuspendTargets =
                 packageResolver.computeUsageAccessRecoverySuspendTargets(recoveryAllowlist)
-            FocusLog.d(FocusEventId.USAGE_ACCESS_CHECK, "│ recoverySuspendTargets=${recoverySuspendTargets.size}")
             val recoveryReasons = recoverySuspendTargets.associateWith {
                 EffectiveBlockReason.USAGE_ACCESS_RECOVERY_LOCKDOWN.name
             }
             val recoveryReasonsByPackage = recoveryReasons.mapValues { setOf(it.value) }
             val allowlistReasons = recoveryAllowlist.associateWith { "usage access recovery" }
-        val managedNetworkPolicy = globalControls.toManagedNetworkPolicy(controllerPackageName)
-        val restrictions = PolicyRestrictions.build(
-            globalControls = globalControls,
-            managedNetworkPolicy = managedNetworkPolicy
-        )
-            FocusLog.d(FocusEventId.USAGE_ACCESS_CHECK, "│ restrictions=${restrictions.size} managedNetwork=$managedNetworkPolicy")
-            FocusLog.d(FocusEventId.USAGE_ACCESS_CHECK, "└── PolicyEvaluator.evaluate() END (recovery lockdown) ──")
+            val managedNetworkPolicy = globalControls.toManagedNetworkPolicy(controllerPackageName)
+            val restrictions = PolicyRestrictions.build(
+                globalControls = globalControls,
+                managedNetworkPolicy = managedNetworkPolicy
+            )
             return PolicyState(
                 mode = effectiveMode,
                 lockTaskAllowlist = recoveryAllowlist,
@@ -74,42 +77,30 @@ internal class PolicyEvaluator(
                 lockReason = usageAccessComplianceState.reason,
                 budgetBlockedPackages = emptySet(),
                 touchGrassBreakActive = false,
-            primaryReasonByPackage = recoveryReasons,
-            blockReasonsByPackage = recoveryReasonsByPackage,
-            globalControls = globalControls
-        )
-    }
-        val normalizedEmergency = emergencyApps.map(String::trim).filter(String::isNotBlank).toSet()
-        val normalizedAlwaysAllowed = alwaysAllowedApps.map { it.trim() }.filter { it.isNotBlank() }.toSet()
-        FocusLog.d(FocusEventId.ALLOWLIST_RESOLVE, "│ Resolving allowlist: emergency=${normalizedEmergency.size} alwaysAllowed=${normalizedAlwaysAllowed.size}")
-        val allowlistResolution = packageResolver.resolveAllowlist(
-            userChosenEmergencyApps = normalizedEmergency,
-            alwaysAllowedApps = normalizedAlwaysAllowed
-        )
-        FocusLog.d(FocusEventId.ALLOWLIST_RESOLVE, "│ Allowlist resolved: ${allowlistResolution.packages.size} packages")
-        allowlistResolution.reasons.forEach { (pkg, reason) ->
-            FocusLog.v(FocusEventId.ALLOWLIST_RESOLVE, "│   allowlist: $pkg → $reason")
+                primaryReasonByPackage = recoveryReasons,
+                blockReasonsByPackage = recoveryReasonsByPackage,
+                globalControls = globalControls
+            )
         }
 
-        val budgetBlockedSuspendable =
-            packageResolver.filterSuspendable(
-                budgetBlockedPackages,
-                allowlistResolution.packages
-            )
-        FocusLog.d(FocusEventId.SUSPEND_TARGET, "│ budgetBlockedSuspendable=${budgetBlockedSuspendable.size} (from ${budgetBlockedPackages.size} budget blocked)")
+        val normalizedEmergency = emergencyApps
+            .asSequence()
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .toSet()
+
+        val budgetBlockedSuspendable = packageResolver.filterSuspendable(
+            packages = budgetBlockedPackages,
+            allowlist = protectionSnapshot.fullyExemptPackages
+        )
         val alwaysBlockedSuspendable = packageResolver.filterSuspendable(
             packages = alwaysBlockedApps,
-            allowlist = allowlistResolution.packages
+            allowlist = protectionSnapshot.fullyExemptPackages
         )
-        FocusLog.d(FocusEventId.SUSPEND_TARGET, "│ alwaysBlockedSuspendable=${alwaysBlockedSuspendable.size} (from ${alwaysBlockedApps.size} always blocked)")
-        if (alwaysBlockedSuspendable.isNotEmpty()) {
-            FocusLog.d(FocusEventId.SUSPEND_TARGET, "│   alwaysBlocked pkgs: ${alwaysBlockedSuspendable.joinToString(",")}")
-        }
         val strictInstallSuspendable = packageResolver.filterSuspendable(
             packages = strictInstallBlockedPackages,
-            allowlist = allowlistResolution.packages
+            allowlist = protectionSnapshot.fullyExemptPackages
         )
-        FocusLog.d(FocusEventId.SUSPEND_TARGET, "│ strictInstallSuspendable=${strictInstallSuspendable.size} (from ${strictInstallBlockedPackages.size} strict install)")
         val managedNetworkPolicy = globalControls.toManagedNetworkPolicy(controllerPackageName)
 
         val normalizedBlockReasons = blockReasonsByPackage
@@ -143,7 +134,7 @@ internal class PolicyEvaluator(
             } else {
                 primaryReasonByPackage[pkg]?.let { addReason(pkg, it) }
             }
-            if (!pkg.isBlank() && finalBlockReasons[pkg].isNullOrEmpty()) {
+            if (finalBlockReasons[pkg].isNullOrEmpty()) {
                 addReason(pkg, "BUDGET")
             }
         }
@@ -158,33 +149,29 @@ internal class PolicyEvaluator(
                 reasons.forEach { addReason(pkg, it) }
             }
         }
-        val derivedPrimaryReasons = BlockReasonUtils.derivePrimaryByPackage(finalBlockReasons)
-        val finalBlockReasonsByPackage = finalBlockReasons.mapValues { (_, value) -> value.toSet() }
 
+        val finalBlockReasonsByPackage = finalBlockReasons.mapValues { (_, value) -> value.toSet() }
+        val derivedPrimaryReasons = BlockReasonUtils.derivePrimaryByPackage(finalBlockReasons)
         val suspendTargets = mergeSuspendTargets(
             budgetBlockedSuspendable = budgetBlockedSuspendable,
             alwaysBlockedSuspendable = alwaysBlockedSuspendable,
             strictInstallSuspendable = strictInstallSuspendable
         )
-        FocusLog.d(FocusEventId.SUSPEND_TARGET, "│ MERGED suspendTargets=${suspendTargets.size} budget=${budgetBlockedSuspendable.size} alwaysBlocked=${alwaysBlockedSuspendable.size} strict=${strictInstallSuspendable.size}")
 
         val restrictions = PolicyRestrictions.build(
             globalControls = globalControls,
             managedNetworkPolicy = managedNetworkPolicy
         )
-        FocusLog.d(FocusEventId.LOCK_CALC, "│ restrictions=${restrictions.size}: ${restrictions.joinToString(",")}")
         val uninstallProtectedTargets = uninstallProtectedApps
             .asSequence()
             .map(String::trim)
             .filter(String::isNotBlank)
             .filter(packageResolver::isPackageInstalled)
             .toSet()
-        FocusLog.d(FocusEventId.LOCK_CALC, "│ uninstallProtectedTargets=${uninstallProtectedTargets.size} statusBarDisabled=${effectiveMode == ModeState.NORMAL}")
-        FocusLog.d(FocusEventId.POLICY_STATE_COMPUTED, "└── PolicyEvaluator.evaluate() END — suspendTargets=${suspendTargets.size} restrictions=${restrictions.size} ──")
 
         return PolicyState(
             mode = effectiveMode,
-            lockTaskAllowlist = allowlistResolution.packages,
+            lockTaskAllowlist = protectionSnapshot.runtimeExemptPackages,
             lockTaskFeatures = FocusConfig.normalLockTaskFeatures,
             statusBarDisabled = false,
             suspendTargets = suspendTargets,
@@ -196,7 +183,7 @@ internal class PolicyEvaluator(
             blockSelfUninstall = true,
             requireAutoTime = globalControls.lockTime,
             emergencyApps = normalizedEmergency,
-            allowlistReasons = allowlistResolution.reasons,
+            allowlistReasons = protectionSnapshot.runtimeExemptionReasons,
             vpnRequired = false,
             managedNetworkPolicy = managedNetworkPolicy,
             lockReason = lockReason,
@@ -220,11 +207,9 @@ internal class PolicyEvaluator(
             targetedPackages += strictInstallSuspendable
             FocusLog.d(
                 FocusEventId.SUSPEND_TARGET,
-                "│ mergeSuspend: +budget=${budgetBlockedSuspendable.size} +alwaysBlocked=${alwaysBlockedSuspendable.size} +strict=${strictInstallSuspendable.size} total=${targetedPackages.size}"
+                "mergeSuspend budget=${budgetBlockedSuspendable.size} alwaysBlocked=${alwaysBlockedSuspendable.size} strict=${strictInstallSuspendable.size} total=${targetedPackages.size}"
             )
             return targetedPackages
         }
     }
 }
-
-

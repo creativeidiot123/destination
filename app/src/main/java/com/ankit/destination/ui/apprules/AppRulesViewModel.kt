@@ -42,7 +42,6 @@ internal fun AppRuleItem.belongsTo(category: AppRuleCategory): Boolean {
 data class AppRulesUiState(
     val rules: List<AppRuleItem> = emptyList(),
     val availableApps: List<AppOption> = emptyList(),
-    val alwaysAllowedPackages: Set<String> = emptySet(),
     val isLoading: Boolean = true,
     val adminSessionActive: Boolean = false,
     val adminSessionRemainingMs: Long = 0,
@@ -70,14 +69,14 @@ class AppRulesViewModel(
                 val allow = policyEngine.getAlwaysAllowedAppsAsync()
                 val block = policyEngine.getAlwaysBlockedAppsAsync()
                 val uninstall = policyEngine.getUninstallProtectedAppsAsync()
-                val allPackages = allow + block + uninstall
-                val lockedAllowlistPackages = setOf(appContext.packageName)
+                val hiddenPackages = policyEngine.getHiddenAppsAsync()
+                    .asSequence()
+                    .map { it.packageName }
+                    .toSet()
+                val allPackages = (allow + block + uninstall) - hiddenPackages
                 val appOptions = loadInstalledAppOptions(
                     context = appContext,
-                    includePackageNames = allPackages,
-                    disabledPackageReasons = lockedAllowlistPackages.associateWith {
-                        "Locked allowlist app"
-                    }
+                    includePackageNames = allPackages
                 )
                 val labelByPackage = appOptions.associateBy({ it.packageName }, { it.label })
                 val items = allPackages
@@ -87,15 +86,13 @@ class AppRulesViewModel(
                             label = labelByPackage[packageName] ?: packageName,
                             isAllowlist = allow.contains(packageName),
                             isBlocklist = block.contains(packageName),
-                            isUninstallProtected = uninstall.contains(packageName),
-                            isLocked = packageName == appContext.packageName && allow.contains(packageName)
+                            isUninstallProtected = uninstall.contains(packageName)
                         )
                     }
                     .sortedBy { it.label.lowercase() }
                 AppRulesUiState(
                     rules = items,
                     availableApps = appOptions,
-                    alwaysAllowedPackages = allow,
                     isLoading = false,
                     adminSessionActive = adminActive,
                     adminSessionRemainingMs = remainingMs
@@ -115,22 +112,30 @@ class AppRulesViewModel(
             return
         }
         viewModelScope.launch {
+            val protectionSnapshot = withContext(Dispatchers.IO) {
+                policyEngine.getAppProtectionSnapshotAsync()
+            }
             val sanitizedPackages = when (category) {
-                AppRuleCategory.BLOCKLIST -> {
-                    packageNames.filterNot(_uiState.value.alwaysAllowedPackages::contains).toSet()
+                AppRuleCategory.ALLOWLIST -> {
+                    packageNames.filterNot(protectionSnapshot::shouldHideFromStandardLists).toSet()
                 }
                 AppRuleCategory.UNINSTALL_PROTECTION -> {
-                    packageNames.filterNot { it == appContext.packageName }.toSet()
+                    packageNames
+                        .filterNot { it == appContext.packageName }
+                        .filter(protectionSnapshot::isEligibleForManualPolicy)
+                        .toSet()
                 }
-                else -> packageNames
+                AppRuleCategory.BLOCKLIST -> {
+                    packageNames.filter(protectionSnapshot::isEligibleForManualPolicy).toSet()
+                }
             }
             if (sanitizedPackages.isEmpty()) {
                 _uiState.update {
                     it.copy(
                         statusMessage = when (category) {
-                            AppRuleCategory.BLOCKLIST -> "Always allowed apps cannot be blocked."
                             AppRuleCategory.UNINSTALL_PROTECTION -> "Destination cannot be added to uninstall protection."
-                            AppRuleCategory.ALLOWLIST -> "No apps selected."
+                            AppRuleCategory.ALLOWLIST -> "No eligible apps selected."
+                            AppRuleCategory.BLOCKLIST -> "No eligible apps selected."
                         },
                         isError = false
                     )
@@ -159,12 +164,6 @@ class AppRulesViewModel(
     }
 
     fun removeRule(category: AppRuleCategory, rule: AppRuleItem) {
-        if (category == AppRuleCategory.ALLOWLIST && rule.isLocked) {
-            _uiState.update {
-                it.copy(statusMessage = "Destination stays locked in the allowlist.", isError = false)
-            }
-            return
-        }
         if (requiresAuthForRemove()) {
             _uiState.update { it.copy(showAuthDialog = true) }
             return

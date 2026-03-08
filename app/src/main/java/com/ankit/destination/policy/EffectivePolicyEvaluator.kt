@@ -1,6 +1,7 @@
 ﻿package com.ankit.destination.policy
 
 import com.ankit.destination.data.EmergencyTargetType
+import com.ankit.destination.data.GroupTargetMode
 
 enum class EffectiveBlockReason {
     NONE,
@@ -36,6 +37,7 @@ data class GroupPolicyInput(
     val groupId: String,
     val priorityIndex: Int,
     val strictEnabled: Boolean,
+    val targetMode: GroupTargetMode = GroupTargetMode.SELECTED_APPS,
     val dailyLimitMs: Long,
     val hourlyLimitMs: Long,
     val opensPerDay: Int,
@@ -57,6 +59,8 @@ data class GroupPolicyEvaluation(
     val groupId: String,
     val priorityIndex: Int,
     val members: Set<String>,
+    val scheduleTargets: Set<String>,
+    val scheduleReasonToken: String,
     val baselineReason: EffectiveBlockReason,
     val baselineBlocked: Boolean,
     val strictInstallActive: Boolean,
@@ -84,6 +88,7 @@ data class EffectivePolicyEvaluation(
     val strictInstallBlockedPackages: Set<String>,
     val effectiveBlockedPackages: Set<String>,
     val effectiveBlockedGroupIds: Set<String>,
+    val activeAllAppsGroupIds: Set<String>,
     val strictInstallActiveGroupIds: Set<String>,
     val blockReasonsByPackage: Map<String, Set<String>>,
     val primaryReasonByPackage: Map<String, String>,
@@ -98,10 +103,14 @@ object EffectivePolicyEvaluator {
         appPolicies: List<AppPolicyInput>,
         emergencyStates: List<EmergencyStateInput>,
         strictInstallBlockedPackages: Set<String>,
-        alwaysAllowedPackages: Set<String>
+        fullyExemptPackages: Set<String>,
+        allAppsExcludedPackages: Set<String>,
+        installedTargetablePackages: Set<String> = emptySet(),
+        hardProtectedPackages: Set<String> = emptySet()
     ): EffectivePolicyEvaluation {
         FocusLog.d(FocusEventId.GROUP_EVAL, "â”Œâ”€â”€ EffectivePolicyEvaluator.evaluate() START â”€â”€")
-        FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ groups=${groupPolicies.size} apps=${appPolicies.size} emergencyStates=${emergencyStates.size} strictInstall=${strictInstallBlockedPackages.size} alwaysAllowed=${alwaysAllowedPackages.size}")
+        FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ groups=${groupPolicies.size} apps=${appPolicies.size} emergencyStates=${emergencyStates.size} strictInstall=${strictInstallBlockedPackages.size} fullyExempt=${fullyExemptPackages.size} allAppsExcluded=${allAppsExcludedPackages.size}")
+        FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ installedTargetable=${installedTargetablePackages.size} hardProtected=${hardProtectedPackages.size}")
         FocusLog.d(FocusEventId.USAGE_READ, "â”‚ usageTodayMs entries=${usageInputs.usedTodayMs.size} usedHourMs entries=${usageInputs.usedHourMs.size} opensToday entries=${usageInputs.opensToday.size}")
 
         val stateByKey = emergencyStates.associateBy { it.targetType.name to it.targetId.trim() }
@@ -121,10 +130,16 @@ object EffectivePolicyEvaluator {
                 .asSequence()
                 .map(String::trim)
                 .filter(String::isNotBlank)
-                .filterNot(alwaysAllowedPackages::contains)
+                .filterNot(fullyExemptPackages::contains)
                 .toSet()
-            if (members.isEmpty()) {
-                FocusLog.v(FocusEventId.GROUP_EVAL, "â”‚ group=$cleanGroupId SKIPPED (no eligible members after filtering alwaysAllowed)")
+            val scheduleTargets = when (group.targetMode) {
+                GroupTargetMode.SELECTED_APPS -> members
+                GroupTargetMode.ALL_APPS -> installedTargetablePackages -
+                    allAppsExcludedPackages -
+                    hardProtectedPackages
+            }
+            if (members.isEmpty() && (!group.scheduleBlocked || scheduleTargets.isEmpty())) {
+                FocusLog.v(FocusEventId.GROUP_EVAL, "â”‚ group=$cleanGroupId SKIPPED (no eligible members or schedule targets)")
                 return@mapNotNull null
             }
 
@@ -148,16 +163,30 @@ object EffectivePolicyEvaluator {
             val dailyLimitMin = if (group.dailyLimitMs > 0L) group.dailyLimitMs / 60_000L else -1L
             val hourlyLimitMin = if (group.hourlyLimitMs > 0L) group.hourlyLimitMs / 60_000L else -1L
             FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ â”Œâ”€ GROUP: $cleanGroupId (priority=${group.priorityIndex}) members=${members.size} strict=${group.strictEnabled} schedBlocked=${group.scheduleBlocked}")
+            if (group.scheduleBlocked) {
+                FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ â”‚ scheduleTargetMode=${group.targetMode} scheduleTargets=${scheduleTargets.size}")
+            }
             FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ â”‚ usage: dayUsed=${usedDayMin}min/${dailyLimitMin}min hourUsed=${usedHourMin}min/${hourlyLimitMin}min opens=$opens/${group.opensPerDay}")
             FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ â”‚ baseline=${baselineReason.name} blocked=$baselineBlocked")
             FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ â”‚ emergency: enabled=${group.emergencyConfig.enabled} active=$emergencyActive remainingUnlocks=$remainingUnlocks untilMs=${state?.activeUntilEpochMs}")
-            val effectiveBlocked = baselineBlocked && !emergencyActive
-            FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ â””â”€ EFFECTIVE: ${if (effectiveBlocked) "ðŸ”´ BLOCKED" else "ðŸŸ¢ ALLOWED"} members=${members.joinToString(",")}")
+            val effectiveBlocked = baselineBlocked &&
+                !emergencyActive &&
+                when (baselineReason) {
+                    EffectiveBlockReason.SCHEDULED_BLOCK -> scheduleTargets.isNotEmpty()
+                    else -> members.isNotEmpty()
+                }
+            FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ â””â”€ EFFECTIVE: ${if (effectiveBlocked) "ðŸ”´ BLOCKED" else "ðŸŸ¢ ALLOWED"} scheduleTargets=${scheduleTargets.size} members=${members.size}")
 
             GroupPolicyEvaluation(
                 groupId = cleanGroupId,
                 priorityIndex = group.priorityIndex,
                 members = members,
+                scheduleTargets = scheduleTargets,
+                scheduleReasonToken = if (group.targetMode == GroupTargetMode.ALL_APPS) {
+                    "GROUP:${cleanGroupId}:SCHEDULED_BLOCK_ALL_APPS"
+                } else {
+                    "GROUP:${cleanGroupId}:SCHEDULED_BLOCK"
+                },
                 baselineReason = baselineReason,
                 baselineBlocked = baselineBlocked,
                 strictInstallActive = group.scheduleBlocked && group.strictEnabled,
@@ -170,9 +199,9 @@ object EffectivePolicyEvaluator {
 
         val appEvaluations = appPolicies.mapNotNull { policy ->
             val packageName = policy.packageName.trim()
-            if (packageName.isBlank() || alwaysAllowedPackages.contains(packageName)) {
-                if (alwaysAllowedPackages.contains(packageName)) {
-                    FocusLog.v(FocusEventId.APP_EVAL, "â”‚ app=$packageName SKIPPED (always-allowed)")
+            if (packageName.isBlank() || fullyExemptPackages.contains(packageName)) {
+                if (fullyExemptPackages.contains(packageName)) {
+                    FocusLog.v(FocusEventId.APP_EVAL, "â”‚ app=$packageName SKIPPED (fully exempt)")
                 }
                 return@mapNotNull null
             }
@@ -220,6 +249,7 @@ object EffectivePolicyEvaluator {
         val usageBlocked = linkedSetOf<String>()
         val blockReasons = linkedMapOf<String, LinkedHashSet<String>>()
         val effectiveGroupIds = linkedSetOf<String>()
+        val activeAllAppsGroupIds = linkedSetOf<String>()
         val primaryReason = linkedMapOf<String, String>()
 
         fun addReason(pkg: String, reason: String) {
@@ -231,15 +261,29 @@ object EffectivePolicyEvaluator {
         groupEvaluations.forEach { evaluation ->
             if (!evaluation.effectiveBlocked) return@forEach
             effectiveGroupIds += evaluation.groupId
+            if (evaluation.scheduleReasonToken.endsWith("SCHEDULED_BLOCK_ALL_APPS")) {
+                activeAllAppsGroupIds += evaluation.groupId
+            }
             when (evaluation.baselineReason) {
-                EffectiveBlockReason.SCHEDULED_BLOCK -> scheduledBlocked += evaluation.members
+                EffectiveBlockReason.SCHEDULED_BLOCK -> scheduledBlocked += evaluation.scheduleTargets
                 EffectiveBlockReason.HOURLY_CAP,
                 EffectiveBlockReason.DAILY_CAP,
                 EffectiveBlockReason.OPENS_CAP -> usageBlocked += evaluation.members
                 else -> Unit
             }
-            evaluation.members.forEach { pkg ->
-                addReason(pkg = pkg, reason = "GROUP:${evaluation.groupId}:${evaluation.baselineReason.name}")
+            val reasonTargets = when (evaluation.baselineReason) {
+                EffectiveBlockReason.SCHEDULED_BLOCK -> evaluation.scheduleTargets
+                else -> evaluation.members
+            }
+            reasonTargets.forEach { pkg ->
+                addReason(
+                    pkg = pkg,
+                    reason = if (evaluation.baselineReason == EffectiveBlockReason.SCHEDULED_BLOCK) {
+                        evaluation.scheduleReasonToken
+                    } else {
+                        "GROUP:${evaluation.groupId}:${evaluation.baselineReason.name}"
+                    }
+                )
             }
         }
 
@@ -257,7 +301,7 @@ object EffectivePolicyEvaluator {
             .asSequence()
             .map(String::trim)
             .filter(String::isNotBlank)
-            .filterNot(alwaysAllowedPackages::contains)
+            .filterNot(fullyExemptPackages::contains)
             .toSet()
 
         normalizedStrictInstall.forEach { pkg ->
@@ -293,6 +337,7 @@ object EffectivePolicyEvaluator {
             strictInstallBlockedPackages = normalizedStrictInstall,
             effectiveBlockedPackages = effectiveBlockedPackages,
             effectiveBlockedGroupIds = effectiveGroupIds,
+            activeAllAppsGroupIds = activeAllAppsGroupIds,
             strictInstallActiveGroupIds = groupEvaluations.filter { it.strictInstallActive }.mapTo(linkedSetOf()) { it.groupId },
             blockReasonsByPackage = blockReasons.mapValues { (_, value) -> value.toSet() },
             primaryReasonByPackage = BlockReasonUtils.derivePrimaryByPackage(blockReasons),
