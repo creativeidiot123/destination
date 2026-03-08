@@ -25,6 +25,7 @@ class ProvisioningComplianceActivity : AppCompatActivity() {
     private lateinit var primaryButton: Button
     private lateinit var refreshButton: Button
     private lateinit var usageAccessButton: Button
+    private lateinit var accessibilityButton: Button
     private lateinit var coordinator: ProvisioningCoordinator
     private var latestResult: ProvisioningCoordinator.FinalizationResult? = null
     private var finalizationInFlight: Boolean = false
@@ -39,6 +40,9 @@ class ProvisioningComplianceActivity : AppCompatActivity() {
         refreshButton.setOnClickListener { finalizeProvisioning() }
         usageAccessButton.setOnClickListener {
             startActivity(Intent(this, UsageAccessGuideActivity::class.java))
+        }
+        accessibilityButton.setOnClickListener {
+            startActivity(Intent(this, AccessibilityGuideActivity::class.java))
         }
         finalizeProvisioning()
     }
@@ -82,6 +86,8 @@ class ProvisioningComplianceActivity : AppCompatActivity() {
             appendLine("Admin active: ${snapshot.adminActive}")
             appendLine("Device Owner active: ${snapshot.deviceOwnerActive}")
             appendLine("Usage Access granted: ${snapshot.usageAccessGranted}")
+            appendLine("Accessibility enabled: ${snapshot.accessibilityServiceEnabled}")
+            appendLine("Accessibility running: ${snapshot.accessibilityServiceRunning}")
             appendLine("Admin component: ${snapshot.adminComponent}")
             appendLine()
             appendLine("QR config ready: ${snapshot.qrValidation.isReady}")
@@ -119,6 +125,7 @@ class ProvisioningComplianceActivity : AppCompatActivity() {
         }
         refreshButton.isEnabled = !finalizationInFlight
         usageAccessButton.isEnabled = !finalizationInFlight
+        accessibilityButton.isEnabled = !finalizationInFlight
     }
 
     private fun handlePrimaryAction() {
@@ -161,6 +168,9 @@ class ProvisioningComplianceActivity : AppCompatActivity() {
         usageAccessButton = Button(this).apply {
             text = "Open Usage Access"
         }
+        accessibilityButton = Button(this).apply {
+            text = "Open Accessibility"
+        }
         content = TextView(this).apply {
             setTextIsSelectable(true)
             typeface = android.graphics.Typeface.MONOSPACE
@@ -183,6 +193,13 @@ class ProvisioningComplianceActivity : AppCompatActivity() {
             )
             addView(
                 usageAccessButton,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = spacing }
+            )
+            addView(
+                accessibilityButton,
                 LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT

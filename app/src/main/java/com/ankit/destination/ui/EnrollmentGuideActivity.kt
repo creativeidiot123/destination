@@ -34,6 +34,7 @@ class EnrollmentGuideActivity : AppCompatActivity() {
     private lateinit var copyAdbButton: Button
     private lateinit var requestShizukuButton: Button
     private lateinit var openUsageAccessButton: Button
+    private lateinit var openAccessibilityButton: Button
     private lateinit var activateViaShizukuButton: Button
     private lateinit var verifyDoButton: Button
     private lateinit var copyOutputButton: Button
@@ -105,6 +106,9 @@ class EnrollmentGuideActivity : AppCompatActivity() {
         openUsageAccessButton.setOnClickListener {
             startActivity(Intent(this, UsageAccessGuideActivity::class.java))
         }
+        openAccessibilityButton.setOnClickListener {
+            startActivity(Intent(this, AccessibilityGuideActivity::class.java))
+        }
         activateViaShizukuButton.setOnClickListener {
             runShellCommand("activate-device-owner") { controller.runShizukuSetDeviceOwner() }
         }
@@ -168,6 +172,7 @@ class EnrollmentGuideActivity : AppCompatActivity() {
         activateViaShizukuButton.isEnabled =
             shizukuReady &&
                 snapshot.usageAccessGranted &&
+                snapshot.accessibilityServiceEnabled &&
                 !snapshot.deviceOwnerActive &&
                 shellJob?.isActive != true
         verifyDoButton.isEnabled = shizukuReady && shellJob?.isActive != true
@@ -181,6 +186,8 @@ class EnrollmentGuideActivity : AppCompatActivity() {
             appendLine("Admin active: ${snapshot.adminActive}")
             appendLine("Device Owner active: ${snapshot.deviceOwnerActive}")
             appendLine("Usage Access granted: ${snapshot.usageAccessGranted}")
+            appendLine("Accessibility enabled: ${snapshot.accessibilityServiceEnabled}")
+            appendLine("Accessibility running: ${snapshot.accessibilityServiceRunning}")
             appendLine("Admin component: ${snapshot.adminComponent}")
             appendLine("QR provisioning ready: ${snapshot.qrReady}")
             appendLine("Shizuku available: ${shizukuStatus.serviceAvailable}")
@@ -200,7 +207,8 @@ class EnrollmentGuideActivity : AppCompatActivity() {
             appendLine("2. On the first Setup Wizard screen, tap 6 times to open QR provisioning.")
             appendLine("3. Scan the QR payload below or copy it into your enrollment tooling.")
             appendLine("4. Grant Usage Access to Destination during compliance.")
-            appendLine("5. Complete policy compliance and open Destination.")
+            appendLine("5. Enable Destination Accessibility during compliance.")
+            appendLine("6. Complete policy compliance and open Destination.")
             appendLine()
             appendLine("QR payload:")
             appendLine(snapshot.qrPayload ?: "<blocked until ProvisioningConfig is valid>")
@@ -218,14 +226,16 @@ class EnrollmentGuideActivity : AppCompatActivity() {
             appendLine("1. Start Shizuku.")
             appendLine("2. Authorize Destination in Shizuku.")
             appendLine("3. Grant Usage Access to Destination.")
-            appendLine("4. Run the same on-device shell command:")
+            appendLine("4. Enable Destination Accessibility.")
+            appendLine("5. Run the same on-device shell command:")
             appendLine(snapshot.adbSetDeviceOwnerCommand)
-            appendLine("5. Verify with:")
+            appendLine("6. Verify with:")
             appendLine("dpm get-device-owner")
             appendLine()
             appendLine("Notes:")
             appendLine("- ADB and Shizuku both use the same shell-level device-policy command.")
             appendLine("- Destination cannot auto-grant Usage Access; Android requires a user-managed special-access toggle.")
+            appendLine("- Destination cannot auto-enable Accessibility; Android requires a user-managed Accessibility toggle.")
             appendLine("- Device owner assignment only works on a fresh or factory-reset device with no accounts.")
             appendLine("- Shizuku supports rooted devices on all Android versions and non-rooted Android 11+ devices.")
             appendLine("- If Device Owner is already active, do not rerun set-device-owner.")
@@ -259,6 +269,7 @@ class EnrollmentGuideActivity : AppCompatActivity() {
         verifyDoButton.isEnabled = !isBusy
         copyAdbButton.isEnabled = !isBusy
         openUsageAccessButton.isEnabled = !isBusy
+        openAccessibilityButton.isEnabled = !isBusy
         requestShizukuButton.isEnabled = !isBusy
     }
 
@@ -280,6 +291,7 @@ class EnrollmentGuideActivity : AppCompatActivity() {
         copyAdbButton = Button(this).apply { text = getString(R.string.copy_command) }
         requestShizukuButton = Button(this).apply { text = getString(R.string.request_shizuku_permission) }
         openUsageAccessButton = Button(this).apply { text = "Open Usage Access" }
+        openAccessibilityButton = Button(this).apply { text = "Open Accessibility" }
         activateViaShizukuButton = Button(this).apply { text = getString(R.string.run_shizuku_activation) }
         verifyDoButton = Button(this).apply { text = getString(R.string.verify_device_owner) }
         copyOutputButton = Button(this).apply { text = getString(R.string.copy_output) }
@@ -291,6 +303,7 @@ class EnrollmentGuideActivity : AppCompatActivity() {
             addView(copyAdbButton, lp(top = spacing))
             addView(requestShizukuButton, lp(top = spacing))
             addView(openUsageAccessButton, lp(top = spacing))
+            addView(openAccessibilityButton, lp(top = spacing))
             addView(activateViaShizukuButton, lp(top = spacing))
             addView(verifyDoButton, lp(top = spacing))
             addView(copyOutputButton, lp(top = spacing))

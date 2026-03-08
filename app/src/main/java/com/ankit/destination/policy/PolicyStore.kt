@@ -56,6 +56,29 @@ class PolicyStore(context: Context) {
         return prefs.getStringSet(KEY_STRICT_INSTALL_SUSPENDED, emptySet())?.toSet() ?: emptySet()
     }
 
+    fun isAccessibilityServiceEnabled(): Boolean {
+        return prefs.getBoolean(KEY_ACCESSIBILITY_SERVICE_ENABLED, false)
+    }
+
+    fun getAccessibilityStatusCheckedAtMs(): Long {
+        return prefs.getLong(KEY_ACCESSIBILITY_STATUS_CHECKED_AT_MS, 0L)
+    }
+
+    fun getAccessibilityLastConnectedAtMs(): Long? {
+        val value = prefs.getLong(KEY_ACCESSIBILITY_LAST_CONNECTED_AT_MS, -1L)
+        return if (value > 0L) value else null
+    }
+
+    fun getAccessibilityLastDisconnectedAtMs(): Long? {
+        val value = prefs.getLong(KEY_ACCESSIBILITY_LAST_DISCONNECTED_AT_MS, -1L)
+        return if (value > 0L) value else null
+    }
+
+    fun getAccessibilityLastHeartbeatAtMs(): Long? {
+        val value = prefs.getLong(KEY_ACCESSIBILITY_LAST_HEARTBEAT_AT_MS, -1L)
+        return if (value > 0L) value else null
+    }
+
     fun getScheduleLockReason(): String? = prefs.getString(KEY_SCHEDULE_LOCK_REASON, null)
 
     fun getScheduleNextTransitionAtMs(): Long? {
@@ -127,6 +150,38 @@ class PolicyStore(context: Context) {
         return if (value > 0L) value else null
     }
 
+    fun getNextPolicyWakeAtMs(): Long? {
+        val value = prefs.getLong(KEY_NEXT_POLICY_WAKE_AT, -1L)
+        return if (value > 0L) value else null
+    }
+
+    fun getNextPolicyWakeReason(): String? = prefs.getString(KEY_NEXT_POLICY_WAKE_REASON, null)
+
+    fun setAccessibilityServiceEnabled(enabled: Boolean, checkedAtMs: Long = System.currentTimeMillis()) {
+        prefs.edit()
+            .putBoolean(KEY_ACCESSIBILITY_SERVICE_ENABLED, enabled)
+            .putLong(KEY_ACCESSIBILITY_STATUS_CHECKED_AT_MS, checkedAtMs)
+            .apply()
+    }
+
+    fun markAccessibilityServiceConnected(atMs: Long = System.currentTimeMillis()) {
+        prefs.edit()
+            .putLong(KEY_ACCESSIBILITY_LAST_CONNECTED_AT_MS, atMs)
+            .apply()
+    }
+
+    fun markAccessibilityServiceDisconnected(atMs: Long = System.currentTimeMillis()) {
+        prefs.edit()
+            .putLong(KEY_ACCESSIBILITY_LAST_DISCONNECTED_AT_MS, atMs)
+            .apply()
+    }
+
+    fun markAccessibilityHeartbeat(atMs: Long = System.currentTimeMillis()) {
+        prefs.edit()
+            .putLong(KEY_ACCESSIBILITY_LAST_HEARTBEAT_AT_MS, atMs)
+            .apply()
+    }
+
     fun setBudgetState(
         blockedPackages: Set<String>,
         blockedGroupIds: Set<String>,
@@ -155,6 +210,8 @@ class PolicyStore(context: Context) {
         budgetReason: String?,
         budgetUsageAccessGranted: Boolean,
         budgetNextCheckAtMs: Long?,
+        nextPolicyWakeAtMs: Long?,
+        nextPolicyWakeReason: String?,
         primaryReasonByPackage: Map<String, String>,
         blockReasonsByPackage: Map<String, Set<String>>,
         clearStrictInstallSuspendedPackages: Boolean
@@ -171,6 +228,8 @@ class PolicyStore(context: Context) {
             .putString(KEY_BUDGET_REASON, budgetReason)
             .putBoolean(KEY_BUDGET_USAGE_ACCESS_GRANTED, budgetUsageAccessGranted)
             .putLong(KEY_BUDGET_NEXT_CHECK_AT, budgetNextCheckAtMs ?: -1L)
+            .putLong(KEY_NEXT_POLICY_WAKE_AT, nextPolicyWakeAtMs ?: -1L)
+            .putString(KEY_NEXT_POLICY_WAKE_REASON, nextPolicyWakeReason)
             .putString(KEY_PRIMARY_REASON_BY_PACKAGE, encodeMap(primaryReasonByPackage))
             .putString(KEY_BLOCK_REASONS_BY_PACKAGE, encodeReasonSetMap(blockReasonsByPackage))
             .apply {
@@ -479,11 +538,18 @@ class PolicyStore(context: Context) {
         private const val KEY_STRICT_INSTALL_SUSPENDED = "strict_install_suspended"
         private const val KEY_STRICT_INSTALL_LAST_EVENT_AT_MS = "strict_install_last_event_at_ms"
         private const val KEY_STRICT_INSTALL_LAST_PKG = "strict_install_last_pkg"
+        private const val KEY_ACCESSIBILITY_SERVICE_ENABLED = "accessibility_service_enabled"
+        private const val KEY_ACCESSIBILITY_STATUS_CHECKED_AT_MS = "accessibility_status_checked_at_ms"
+        private const val KEY_ACCESSIBILITY_LAST_CONNECTED_AT_MS = "accessibility_last_connected_at_ms"
+        private const val KEY_ACCESSIBILITY_LAST_DISCONNECTED_AT_MS = "accessibility_last_disconnected_at_ms"
+        private const val KEY_ACCESSIBILITY_LAST_HEARTBEAT_AT_MS = "accessibility_last_heartbeat_at_ms"
         private const val KEY_BUDGET_BLOCKED = "budget_blocked_packages"
         private const val KEY_BUDGET_BLOCKED_GROUPS = "budget_blocked_groups"
         private const val KEY_BUDGET_REASON = "budget_reason"
         private const val KEY_BUDGET_USAGE_ACCESS_GRANTED = "budget_usage_access_granted"
         private const val KEY_BUDGET_NEXT_CHECK_AT = "budget_next_check_at"
+        private const val KEY_NEXT_POLICY_WAKE_AT = "next_policy_wake_at"
+        private const val KEY_NEXT_POLICY_WAKE_REASON = "next_policy_wake_reason"
         private const val KEY_TOUCH_GRASS_BREAK_UNTIL_MS = "touch_grass_break_until_ms"
         private const val KEY_UNLOCK_COUNT_DAY = "unlock_count_day"
         private const val KEY_UNLOCK_COUNT_TODAY = "unlock_count_today"
@@ -532,6 +598,5 @@ class PolicyStore(context: Context) {
         }
     }
 }
-
 
 

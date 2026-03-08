@@ -28,5 +28,6 @@
     <string name="set_private_dns_opportunistic">Use Opportunistic Private DNS</string>
     <string name="cancel">Cancel</string>
     <string name="confirm">Confirm</string>
+    <string name="accessibility_service_description">Destination uses Accessibility only to detect the current foreground app and apply blocking rules in real time. It does not read or record screen content.</string>
 </resources>
 

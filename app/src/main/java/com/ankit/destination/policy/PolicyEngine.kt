@@ -16,6 +16,7 @@ import com.ankit.destination.data.GlobalControls
 import com.ankit.destination.data.GroupEmergencyConfig
 import com.ankit.destination.data.GroupLimit
 import com.ankit.destination.data.ScheduleBlockGroup
+import com.ankit.destination.enforce.AccessibilityStatusMonitor
 import com.ankit.destination.schedule.AlarmScheduler
 import com.ankit.destination.schedule.AlarmSchedulerClient
 import com.ankit.destination.schedule.ScheduleDecision
@@ -533,15 +534,23 @@ class PolicyEngine private constructor(
         val scheduleStrictActive = store.isScheduleStrictEnforced()
         val scheduleBlockedPackages = store.getScheduleBlockedPackages()
         val compliance = external.usageAccessComplianceState
+        val accessibilityState = AccessibilityStatusMonitor.refreshNow(appContext, "diagnostics_snapshot")
+        val accessibilityRunning = AccessibilityStatusMonitor.serviceRunning(accessibilityState, nowMs)
         return DiagnosticsSnapshot(
             deviceOwner = isDeviceOwner(),
             desiredMode = desiredMode,
             manualMode = store.getManualMode(),
             usageAccessGranted = compliance.usageAccessGranted,
+            accessibilityServiceEnabled = accessibilityState.enabled,
+            accessibilityServiceRunning = accessibilityRunning,
+            accessibilityDegradedReason = AccessibilityStatusMonitor.degradedReason(accessibilityState, nowMs),
             usageAccessRecoveryLockdownActive = compliance.lockdownActive,
             usageAccessRecoveryAllowlist = compliance.recoveryAllowlist,
             usageAccessRecoveryReason = compliance.reason,
             lastUsageAccessCheckAtMs = UsageAccessMonitor.currentState.value.lastCheckAtMs,
+            lastAccessibilityStatusCheckAtMs = accessibilityState.lastCheckAtMs,
+            lastAccessibilityServiceConnectAtMs = accessibilityState.lastConnectedAtMs.takeIf { it > 0L },
+            lastAccessibilityHeartbeatAtMs = accessibilityState.lastHeartbeatAtMs.takeIf { it > 0L },
             scheduleLockComputed = scheduleComputed,
             scheduleLockActive = scheduleActive,
             scheduleStrictComputed = scheduleStrictComputed,
@@ -555,6 +564,8 @@ class PolicyEngine private constructor(
             budgetReason = store.getBudgetReason(),
             budgetUsageAccessGranted = store.isBudgetUsageAccessGranted(),
             budgetNextCheckAtMs = store.getBudgetNextCheckAtMs(),
+            nextPolicyWakeAtMs = store.getNextPolicyWakeAtMs(),
+            nextPolicyWakeReason = store.getNextPolicyWakeReason(),
             touchGrassBreakActive = false,
             touchGrassBreakUntilMs = null,
             unlockCountToday = 0,
@@ -865,24 +876,24 @@ class PolicyEngine private constructor(
             store.setScheduleStrictEnforced(previousStrictEnforced)
             FocusLog.w(FocusEventId.POLICY_STATE_COMPUTED, "â•‘ apply FAILED â€” rolled back schedule state")
         }
-        syncNextAlarm(
-            nowMs = orchestrated.nowMs,
-            keepOverdueBudgetCheck = shouldRunBudgetEvaluation(nowMs = orchestrated.nowMs)
-        )
+        syncNextAlarm(nowMs = orchestrated.nowMs)
         val totalMs = (System.nanoTime() - overallStartNs) / 1_000_000.0
         FocusLog.d(FocusEventId.POLICY_STATE_COMPUTED, "â•šâ•â• requestApplyNow() DONE in %.1fms success=${result.success} â•â•".format(totalMs))
         return result
     }
 
-    private fun syncNextAlarm(nowMs: Long = clock.nowMs(), keepOverdueBudgetCheck: Boolean = false) {
-        val nextAlarmAt = pickNextAlarmAtMs(
-            nowMs = nowMs,
-            scheduleNextTransitionAtMs = store.getScheduleNextTransitionAtMs(),
-            budgetNextCheckAtMs = store.getBudgetNextCheckAtMs(),
-            touchGrassBreakUntilMs = store.getTouchGrassBreakUntilMs(),
-            keepOverdueBudgetCheck = keepOverdueBudgetCheck
-        )
-        nextAlarmAt?.let(alarmScheduler::scheduleNextTransition) ?: alarmScheduler.cancelNextTransition()
+    private fun syncNextAlarm(nowMs: Long = clock.nowMs()) {
+        val nextWakeAtMs = store.getNextPolicyWakeAtMs()
+        val nextWakeReason = store.getNextPolicyWakeReason()
+        if (nextWakeReason == WAKE_REASON_RELIABILITY_TICK) {
+            alarmScheduler.cancelNextTransition()
+            alarmScheduler.scheduleReliabilityTick(
+                nextWakeAtMs ?: (nowMs + RELIABILITY_TICK_INTERVAL_MS)
+            )
+            return
+        }
+        alarmScheduler.cancelReliabilityTick()
+        nextWakeAtMs?.let(alarmScheduler::scheduleNextTransition) ?: alarmScheduler.cancelNextTransition()
     }
 
     private fun orchestrateCurrentPolicy(now: ZonedDateTime = clock.now()): OrchestratedState {
@@ -993,11 +1004,33 @@ class PolicyEngine private constructor(
             strictInstallBlockedPackages = strictInstallBlocked,
             alwaysAllowedPackages = allowlistPackages
         )
+        val budgetNextCheckAtMs = computeClosestBudgetCheckAtMs(
+            nowMs = nowMs,
+            baseNextCheckAtMs = usageSnapshot.nextCheckAtMs,
+            groupPolicies = groupInputs,
+            appPolicies = appInputs,
+            usageInputs = usageSnapshot.usageInputs,
+            allowlistPackages = allowlistPackages,
+            emergencyStates = emergencyStates
+        )
+        val emergencyUnlockExpiresAtMs = emergencyStates
+            .mapNotNull { it.activeUntilEpochMs?.takeIf { untilMs -> untilMs > nowMs } }
+            .minOrNull()
+        val nextPolicyWake = planNextPolicyWake(
+            nowMs = nowMs,
+            scheduleNextTransitionAtMs = scheduleDecision.nextTransitionAt?.toInstant()?.toEpochMilli(),
+            budgetNextCheckAtMs = budgetNextCheckAtMs,
+            emergencyUnlockExpiresAtMs = emergencyUnlockExpiresAtMs,
+            touchGrassBreakUntilMs = null,
+            reliabilityFallbackAtMs = nowMs + RELIABILITY_TICK_INTERVAL_MS
+        )
         return OrchestratedState(
             nowMs = nowMs,
             usageAccessGranted = usageSnapshot.usageAccessGranted,
             usageAccessComplianceState = currentUsageAccessComplianceState(usageSnapshot.usageAccessGranted),
-            nextCheckAtMs = usageSnapshot.nextCheckAtMs,
+            nextCheckAtMs = budgetNextCheckAtMs,
+            nextPolicyWakeAtMs = nextPolicyWake.atMs,
+            nextPolicyWakeReason = nextPolicyWake.reason,
             scheduleDecision = scheduleDecision,
             scheduledGroupIds = scheduledGroupIds,
             scheduledAppPackages = scheduledAppPackages,
@@ -1031,6 +1064,8 @@ class PolicyEngine private constructor(
                 ?: if (!orchestrated.usageAccessGranted) "Usage access not granted" else null,
             budgetUsageAccessGranted = orchestrated.usageAccessGranted,
             budgetNextCheckAtMs = orchestrated.nextCheckAtMs,
+            nextPolicyWakeAtMs = orchestrated.nextPolicyWakeAtMs,
+            nextPolicyWakeReason = orchestrated.nextPolicyWakeReason,
             primaryReasonByPackage = suspendPlan.primaryReasons,
             blockReasonsByPackage = suspendPlan.blockReasonsByPackage,
             clearStrictInstallSuspendedPackages = !orchestrated.scheduleState.strictActive
@@ -1048,7 +1083,7 @@ class PolicyEngine private constructor(
         FocusLog.i(
             appContext,
             FocusEventId.POLICY_STATE_COMPUTED,
-            "scheduleLock=${orchestrated.scheduleState.active} strict=${orchestrated.scheduleState.strictActive} scheduledGroups=${orchestrated.scheduleState.blockedGroupIds.size} scheduledApps=${orchestrated.scheduleState.blockedAppPackages.size} blockedPackages=${orchestrated.evaluation.effectiveBlockedPackages.size} blockedGroups=${orchestrated.evaluation.effectiveBlockedGroupIds.size} usageAccess=${orchestrated.usageAccessGranted}"
+            "scheduleLock=${orchestrated.scheduleState.active} strict=${orchestrated.scheduleState.strictActive} scheduledGroups=${orchestrated.scheduleState.blockedGroupIds.size} scheduledApps=${orchestrated.scheduleState.blockedAppPackages.size} blockedPackages=${orchestrated.evaluation.effectiveBlockedPackages.size} blockedGroups=${orchestrated.evaluation.effectiveBlockedGroupIds.size} usageAccess=${orchestrated.usageAccessGranted} nextWake=${orchestrated.nextPolicyWakeReason}@${orchestrated.nextPolicyWakeAtMs}"
         )
     }
 
@@ -1403,12 +1438,19 @@ class PolicyEngine private constructor(
         val usageAccessGranted: Boolean,
         val usageAccessComplianceState: UsageAccessComplianceState,
         val nextCheckAtMs: Long?,
+        val nextPolicyWakeAtMs: Long?,
+        val nextPolicyWakeReason: String?,
         val scheduleDecision: ScheduleDecision,
         val scheduledGroupIds: Set<String>,
         val scheduledAppPackages: Set<String>,
         val scheduleState: LiveScheduleState,
         val policyControls: PolicyControls,
         val evaluation: EffectivePolicyEvaluation
+    )
+
+    internal data class PolicyWakePlan(
+        val atMs: Long?,
+        val reason: String?
     )
 
     private data class SuspendPlan(
@@ -1629,24 +1671,110 @@ class PolicyEngine private constructor(
             return nowMs + graceMs >= nextCheckAt
         }
 
+        internal fun computeClosestBudgetCheckAtMs(
+            nowMs: Long,
+            baseNextCheckAtMs: Long?,
+            groupPolicies: List<GroupPolicyInput>,
+            appPolicies: List<AppPolicyInput>,
+            usageInputs: UsageInputs,
+            allowlistPackages: Set<String>,
+            emergencyStates: List<EmergencyStateInput>
+        ): Long? {
+            val candidates = mutableListOf<Long>()
+            if (hasBudgetBoundarySensitivePolicy(groupPolicies, appPolicies, emergencyStates)) {
+                baseNextCheckAtMs?.let(candidates::add)
+            }
+            groupPolicies.forEach { group ->
+                if (group.scheduleBlocked) return@forEach
+                val eligibleMembers = group.members.filterNot(allowlistPackages::contains)
+                if (eligibleMembers.isEmpty()) return@forEach
+                val usedDay = eligibleMembers.sumOf { usageInputs.usedTodayMs[it] ?: 0L }
+                val usedHour = eligibleMembers.sumOf { usageInputs.usedHourMs[it] ?: 0L }
+                if (group.dailyLimitMs > 0L && usedDay < group.dailyLimitMs) {
+                    candidates += nowMs + (group.dailyLimitMs - usedDay)
+                }
+                if (group.hourlyLimitMs > 0L && usedHour < group.hourlyLimitMs) {
+                    candidates += nowMs + (group.hourlyLimitMs - usedHour)
+                }
+            }
+            appPolicies.forEach { policy ->
+                if (policy.scheduleBlocked || allowlistPackages.contains(policy.packageName)) return@forEach
+                val usedDay = usageInputs.usedTodayMs[policy.packageName] ?: 0L
+                val usedHour = usageInputs.usedHourMs[policy.packageName] ?: 0L
+                if (policy.dailyLimitMs > 0L && usedDay < policy.dailyLimitMs) {
+                    candidates += nowMs + (policy.dailyLimitMs - usedDay)
+                }
+                if (policy.hourlyLimitMs > 0L && usedHour < policy.hourlyLimitMs) {
+                    candidates += nowMs + (policy.hourlyLimitMs - usedHour)
+                }
+            }
+            return candidates.filter { it > nowMs }.minOrNull()
+        }
+
+        internal fun planNextPolicyWake(
+            nowMs: Long,
+            scheduleNextTransitionAtMs: Long?,
+            budgetNextCheckAtMs: Long?,
+            emergencyUnlockExpiresAtMs: Long?,
+            touchGrassBreakUntilMs: Long?,
+            reliabilityFallbackAtMs: Long?,
+            keepOverdueBudgetCheck: Boolean = false
+        ): PolicyWakePlan {
+            val candidates = buildList {
+                scheduleNextTransitionAtMs
+                    ?.takeIf { it > nowMs }
+                    ?.let { add(PolicyWakePlan(it, WAKE_REASON_SCHEDULE_TRANSITION)) }
+                when {
+                    budgetNextCheckAtMs == null -> Unit
+                    budgetNextCheckAtMs > nowMs -> add(PolicyWakePlan(budgetNextCheckAtMs, WAKE_REASON_BUDGET_CHECK))
+                    keepOverdueBudgetCheck -> add(PolicyWakePlan(nowMs + 1L, WAKE_REASON_BUDGET_CHECK))
+                }
+                emergencyUnlockExpiresAtMs
+                    ?.takeIf { it > nowMs }
+                    ?.let { add(PolicyWakePlan(it, WAKE_REASON_EMERGENCY_EXPIRY)) }
+                touchGrassBreakUntilMs
+                    ?.takeIf { it > nowMs }
+                    ?.let { add(PolicyWakePlan(it, WAKE_REASON_TOUCH_GRASS_BREAK_END)) }
+            }.sortedBy { it.atMs }
+            return candidates.firstOrNull()
+                ?: reliabilityFallbackAtMs
+                    ?.takeIf { it > nowMs }
+                    ?.let { PolicyWakePlan(it, WAKE_REASON_RELIABILITY_TICK) }
+                ?: PolicyWakePlan(null, null)
+        }
+
         internal fun pickNextAlarmAtMs(
             nowMs: Long,
             scheduleNextTransitionAtMs: Long?,
             budgetNextCheckAtMs: Long?,
             touchGrassBreakUntilMs: Long?,
-            keepOverdueBudgetCheck: Boolean = false
+            keepOverdueBudgetCheck: Boolean = false,
+            emergencyUnlockExpiresAtMs: Long? = null,
+            reliabilityFallbackAtMs: Long? = null
         ): Long? {
-            val normalizedBudgetCheck = when {
-                budgetNextCheckAtMs == null -> null
-                budgetNextCheckAtMs > nowMs -> budgetNextCheckAtMs
-                keepOverdueBudgetCheck -> nowMs + 1L
-                else -> null
+            return planNextPolicyWake(
+                nowMs = nowMs,
+                scheduleNextTransitionAtMs = scheduleNextTransitionAtMs,
+                budgetNextCheckAtMs = budgetNextCheckAtMs,
+                emergencyUnlockExpiresAtMs = emergencyUnlockExpiresAtMs,
+                touchGrassBreakUntilMs = touchGrassBreakUntilMs,
+                reliabilityFallbackAtMs = reliabilityFallbackAtMs,
+                keepOverdueBudgetCheck = keepOverdueBudgetCheck
+            ).atMs
+        }
+
+        private fun hasBudgetBoundarySensitivePolicy(
+            groupPolicies: List<GroupPolicyInput>,
+            appPolicies: List<AppPolicyInput>,
+            emergencyStates: List<EmergencyStateInput>
+        ): Boolean {
+            if (emergencyStates.any { it.activeUntilEpochMs != null }) return true
+            if (groupPolicies.any { it.dailyLimitMs > 0L || it.hourlyLimitMs > 0L || it.opensPerDay > 0 || it.emergencyConfig.enabled }) {
+                return true
             }
-            return listOfNotNull(
-                scheduleNextTransitionAtMs,
-                normalizedBudgetCheck,
-                touchGrassBreakUntilMs
-            ).filter { it > nowMs }.minOrNull()
+            return appPolicies.any {
+                it.dailyLimitMs > 0L || it.hourlyLimitMs > 0L || it.opensPerDay > 0 || it.emergencyConfig.enabled
+            }
         }
 
         fun resolveEffectiveMode(
@@ -1676,6 +1804,13 @@ class PolicyEngine private constructor(
         internal fun isSingleAppScheduleTarget(targetId: String): Boolean {
             return decodeSingleAppScheduleTarget(targetId) != null
         }
+
+        private const val WAKE_REASON_SCHEDULE_TRANSITION = "schedule_transition"
+        private const val WAKE_REASON_BUDGET_CHECK = "budget_check"
+        private const val WAKE_REASON_EMERGENCY_EXPIRY = "emergency_expiry"
+        private const val WAKE_REASON_TOUCH_GRASS_BREAK_END = "touch_grass_break_end"
+        private const val WAKE_REASON_RELIABILITY_TICK = "reliability_tick"
+        private const val RELIABILITY_TICK_INTERVAL_MS = 15L * 60_000L
     }
 }
 

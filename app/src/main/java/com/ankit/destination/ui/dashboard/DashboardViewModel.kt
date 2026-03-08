@@ -3,6 +3,7 @@ package com.ankit.destination.ui.dashboard
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ankit.destination.enforce.AccessibilityStatusMonitor
 import com.ankit.destination.enforce.PolicyApplyOrchestrator
 import com.ankit.destination.policy.PolicyEngine
 import com.ankit.destination.security.AppLockManager
@@ -32,6 +33,10 @@ data class DashboardUiState(
     val strictActiveGroups: Int = 0,
     val lastApplied: String? = null,
     val lastError: String? = null,
+    val accessibilityServiceEnabled: Boolean = false,
+    val accessibilityServiceRunning: Boolean = false,
+    val accessibilityDegradedReason: String? = null,
+    val nextPolicyWake: String? = null,
     val usageAccessGranted: Boolean = false,
     val usageAccessRecoveryLockdownActive: Boolean = false,
     val usageAccessRecoveryReason: String? = null,
@@ -63,6 +68,20 @@ class DashboardViewModel(
                 .drop(1)
                 .collect { refresh() }
         }
+        viewModelScope.launch {
+            AccessibilityStatusMonitor.currentState
+                .map { state ->
+                    listOf(
+                        state.enabled,
+                        state.lastConnectedAtMs,
+                        state.lastDisconnectedAtMs,
+                        state.lastHeartbeatAtMs
+                    )
+                }
+                .distinctUntilChanged()
+                .drop(1)
+                .collect { refresh() }
+        }
     }
 
     fun refresh() {
@@ -87,6 +106,14 @@ class DashboardViewModel(
                     strictActiveGroups = if (snapshot.scheduleStrictActive) snapshot.scheduleBlockedGroups.size else 0,
                     lastApplied = lastApplied,
                     lastError = snapshot.lastError,
+                    accessibilityServiceEnabled = snapshot.accessibilityServiceEnabled,
+                    accessibilityServiceRunning = snapshot.accessibilityServiceRunning,
+                    accessibilityDegradedReason = snapshot.accessibilityDegradedReason,
+                    nextPolicyWake = snapshot.nextPolicyWakeAtMs?.let { wakeAt ->
+                        val formatted = DateFormat.getDateTimeInstance().format(Date(wakeAt))
+                        val reason = snapshot.nextPolicyWakeReason ?: "policy wake"
+                        "$reason at $formatted"
+                    },
                     usageAccessGranted = snapshot.usageAccessGranted,
                     usageAccessRecoveryLockdownActive = snapshot.usageAccessRecoveryLockdownActive,
                     usageAccessRecoveryReason = snapshot.usageAccessRecoveryReason,

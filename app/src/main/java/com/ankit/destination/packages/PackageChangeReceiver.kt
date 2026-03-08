@@ -165,8 +165,7 @@ class PackageChangeReceiver : BroadcastReceiver() {
                         return@forEach
                     }
 
-                    val strictStaged = engine.onNewPackageInstalledDuringStrictSchedule(changedPackage)
-                    if (!strictStaged) return@forEach
+                    engine.onNewPackageInstalledDuringStrictSchedule(changedPackage)
                     shouldEnforce = true
                 }
 

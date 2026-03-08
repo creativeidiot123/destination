@@ -3,6 +3,7 @@ package com.ankit.destination.schedule
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import com.ankit.destination.enforce.AccessibilityStatusMonitor
 import com.ankit.destination.enforce.PolicyApplyOrchestrator
 import com.ankit.destination.policy.FocusEventId
 import com.ankit.destination.policy.FocusLog
@@ -13,6 +14,10 @@ class ScheduleEventReceiver : BroadcastReceiver() {
         val trigger = intent?.action ?: "ScheduleEvent"
         val pending = goAsync()
         try {
+            AccessibilityStatusMonitor.refreshNow(
+                context = context,
+                reason = "schedule_event:$trigger"
+            )
             UsageAccessMonitor.refreshNow(
                 context = context,
                 reason = "schedule_event:$trigger",

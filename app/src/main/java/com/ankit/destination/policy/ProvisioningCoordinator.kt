@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.PersistableBundle
+import com.ankit.destination.enforce.AccessibilityStatusMonitor
 import com.ankit.destination.enforce.PolicyApplyOrchestrator
 import com.ankit.destination.usage.UsageAccess
 import com.ankit.destination.usage.UsageAccessMonitor
@@ -24,6 +25,8 @@ class ProvisioningCoordinator(context: Context) {
         val adminActive: Boolean,
         val deviceOwnerActive: Boolean,
         val usageAccessGranted: Boolean,
+        val accessibilityServiceEnabled: Boolean,
+        val accessibilityServiceRunning: Boolean,
         val qrValidation: ProvisioningConfig.ValidationResult,
         val lastSignalAction: String?,
         val lastSignalAtMs: Long?,
@@ -49,11 +52,14 @@ class ProvisioningCoordinator(context: Context) {
 
     fun snapshot(): Snapshot {
         val adminComponent = adminComponentString()
+        val accessibilityState = AccessibilityStatusMonitor.refreshNow(appContext, "provisioning_snapshot")
         return Snapshot(
             adminComponent = adminComponent,
             adminActive = facade.isAdminActive(),
             deviceOwnerActive = facade.isDeviceOwner(),
             usageAccessGranted = UsageAccess.hasUsageAccess(appContext),
+            accessibilityServiceEnabled = accessibilityState.enabled,
+            accessibilityServiceRunning = AccessibilityStatusMonitor.serviceRunning(accessibilityState),
             qrValidation = ProvisioningConfig.validateQrProvisioning(adminComponent),
             lastSignalAction = store.getProvisioningSignalAction(),
             lastSignalAtMs = store.getProvisioningSignalAtMs(),
@@ -89,9 +95,12 @@ class ProvisioningCoordinator(context: Context) {
             requestPolicyRefreshIfChanged = false
         )
         recordProvisioningSignal(trigger, adminExtras)
+        val accessibilityState = AccessibilityStatusMonitor.refreshNow(appContext, "provisioning_finalize")
         provisioningPendingReason(
             isDeviceOwner = facade.isDeviceOwner(),
-            usageAccessGranted = UsageAccess.hasUsageAccess(appContext)
+            usageAccessGranted = UsageAccess.hasUsageAccess(appContext),
+            accessibilityServiceEnabled = accessibilityState.enabled,
+            accessibilityServiceRunning = AccessibilityStatusMonitor.serviceRunning(accessibilityState)
         )?.let { message ->
             store.recordProvisioningFinalization(FinalizationState.PENDING.name, message)
             return FinalizationResult(FinalizationState.PENDING, message)
@@ -157,11 +166,15 @@ class ProvisioningCoordinator(context: Context) {
 
 internal fun provisioningPendingReason(
     isDeviceOwner: Boolean,
-    usageAccessGranted: Boolean
+    usageAccessGranted: Boolean,
+    accessibilityServiceEnabled: Boolean,
+    accessibilityServiceRunning: Boolean
 ): String? {
     return when {
         !isDeviceOwner -> "Device owner not active yet; continue setup to finish enrollment."
         !usageAccessGranted -> "Grant Usage Access to Destination before finishing enrollment."
+        !accessibilityServiceEnabled -> "Enable Destination Accessibility before finishing enrollment."
+        !accessibilityServiceRunning -> "Destination Accessibility is enabled, but the enforcement service is not running yet."
         else -> null
     }
 }

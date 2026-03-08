@@ -260,6 +260,16 @@ fun DiagnosticsScreen() {
                             )
                             DiagnosticTile(
                                 icon = Icons.Default.Security,
+                                label = "Accessibility",
+                                value = "${snapshot.accessibilityServiceEnabled}/${snapshot.accessibilityServiceRunning}",
+                                color = if (snapshot.accessibilityServiceEnabled && snapshot.accessibilityServiceRunning) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.error
+                                }
+                            )
+                            DiagnosticTile(
+                                icon = Icons.Default.Security,
                                 label = "Recovery lockdown",
                                 value = snapshot.usageAccessRecoveryLockdownActive.toString(),
                                 color = if (snapshot.usageAccessRecoveryLockdownActive) {
@@ -274,6 +284,39 @@ fun DiagnosticsScreen() {
                                 value = formatTime(snapshot.lastUsageAccessCheckAtMs),
                                 color = MaterialTheme.colorScheme.secondary
                             )
+                        }
+                    }
+                }
+
+                uiState.snapshot?.takeIf { !it.accessibilityServiceEnabled || !it.accessibilityServiceRunning }?.let { snapshot ->
+                    item {
+                        ElevatedCard(
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                            colors = CardDefaults.elevatedCardColors(
+                                containerColor = MaterialTheme.colorScheme.errorContainer
+                            )
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Text(
+                                    text = "Accessibility Recovery",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = snapshot.accessibilityDegradedReason
+                                        ?: "Accessibility is currently unavailable.",
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                                snapshot.nextPolicyWakeAtMs?.let { nextWakeAt ->
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text(
+                                        text = "Next wake: ${snapshot.nextPolicyWakeReason ?: "policy"} @ ${formatTime(nextWakeAt)}",
+                                        color = MaterialTheme.colorScheme.onErrorContainer
+                                    )
+                                }
+                            }
                         }
                     }
                 }

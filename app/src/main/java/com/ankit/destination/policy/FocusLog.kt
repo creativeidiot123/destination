@@ -45,8 +45,11 @@ object FocusEventId {
     const val APP_EVAL = "APP-001"
     const val SCHEDULE_EVAL = "SCHED-002"
     const val ALARM_SCHEDULE = "SCHED-003"
+    const val POLICY_WAKE = "SCHED-004"
     const val LOCK_CALC = "LOCK-001"
     const val ENFORCE_EXEC = "ENFORCE-001"
+    const val ACCESSIBILITY_STATUS = "A11Y-001"
+    const val ACCESSIBILITY_SERVICE = "A11Y-002"
     const val VPN_LIFECYCLE = "VPN-001"
     const val VPN_DNS = "VPN-002"
     const val STORE_WRITE = "STORE-001"
@@ -60,16 +63,16 @@ object FocusLog {
 
     /** Verbose trace — Logcat only, no persistence. Use for hot paths. */
     fun v(eventId: String, message: String) {
-        Log.v(TAG, "[${threadLabel()}][$eventId] $message")
+        safeLog { Log.v(TAG, "[${threadLabel()}][$eventId] $message") }
     }
 
     /** Debug trace — Logcat only, no persistence. Use for detailed logic tracing. */
     fun d(eventId: String, message: String) {
-        Log.d(TAG, "[${threadLabel()}][$eventId] $message")
+        safeLog { Log.d(TAG, "[${threadLabel()}][$eventId] $message") }
     }
 
     fun i(eventId: String, message: String) {
-        Log.i(TAG, "[${threadLabel()}][$eventId] $message")
+        safeLog { Log.i(TAG, "[${threadLabel()}][$eventId] $message") }
     }
 
     fun i(context: Context, eventId: String, message: String) {
@@ -78,7 +81,7 @@ object FocusLog {
     }
 
     fun w(eventId: String, message: String) {
-        Log.w(TAG, "[${threadLabel()}][$eventId] $message")
+        safeLog { Log.w(TAG, "[${threadLabel()}][$eventId] $message") }
     }
 
     fun w(context: Context, eventId: String, message: String) {
@@ -87,7 +90,7 @@ object FocusLog {
     }
 
     fun e(eventId: String, message: String, throwable: Throwable? = null) {
-        Log.e(TAG, "[${threadLabel()}][$eventId] $message", throwable)
+        safeLog { Log.e(TAG, "[${threadLabel()}][$eventId] $message", throwable) }
     }
 
     fun e(context: Context, eventId: String, message: String, throwable: Throwable? = null) {
@@ -110,7 +113,7 @@ object FocusLog {
     }
 
     /** Returns true if currently on the main/UI thread. */
-    fun isMainThread(): Boolean = Looper.myLooper() == Looper.getMainLooper()
+    fun isMainThread(): Boolean = currentLooper() == mainLooper()
 
     /** Warn if executing on the main thread (for detecting blocking calls). */
     fun warnIfMainThread(caller: String) {
@@ -155,7 +158,15 @@ object FocusLog {
 
     private fun threadLabel(): String {
         val thread = Thread.currentThread()
-        return if (Looper.myLooper() == Looper.getMainLooper()) "main" else thread.name
+        return if (currentLooper() != null && currentLooper() == mainLooper()) "main" else thread.name
+    }
+
+    private fun currentLooper(): Looper? = runCatching { Looper.myLooper() }.getOrNull()
+
+    private fun mainLooper(): Looper? = runCatching { Looper.getMainLooper() }.getOrNull()
+
+    private inline fun safeLog(block: () -> Unit) {
+        runCatching(block)
     }
 
     private fun prefs(context: Context) = context.applicationContext
@@ -176,4 +187,3 @@ object FocusLog {
 
     private val timestampFormatter = DateTimeFormatter.ofPattern("MM-dd HH:mm:ss", Locale.US)
 }
-

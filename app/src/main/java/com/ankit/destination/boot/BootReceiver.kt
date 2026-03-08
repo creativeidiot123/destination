@@ -5,7 +5,9 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import com.ankit.destination.enforce.AccessibilityStatusMonitor
 import com.ankit.destination.enforce.PolicyApplyOrchestrator
+import com.ankit.destination.packages.PackageChangeReceiver
 import com.ankit.destination.policy.FocusEventId
 import com.ankit.destination.policy.FocusLog
 import com.ankit.destination.policy.PolicyEngine
@@ -20,6 +22,10 @@ class BootReceiver : BroadcastReceiver() {
 
         FocusLog.i(FocusEventId.BOOT_REAPPLY, "BootReceiver: action=$action attempt=$attempt")
         try {
+            AccessibilityStatusMonitor.refreshNow(
+                context = context,
+                reason = "boot:$action"
+            )
             UsageAccessMonitor.refreshNow(
                 context = context,
                 reason = "boot:$action",
@@ -31,6 +37,7 @@ class BootReceiver : BroadcastReceiver() {
                 cancelRetry(context)
                 return
             }
+            PackageChangeReceiver.ensureRuntimeRegistration(context)
 
             requestEnqueued = true
             PolicyApplyOrchestrator.requestApply(
@@ -104,4 +111,3 @@ class BootReceiver : BroadcastReceiver() {
         private val RETRY_DELAYS_MS = longArrayOf(5_000L, 30_000L, 120_000L)
     }
 }
-

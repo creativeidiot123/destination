@@ -146,6 +146,51 @@ fun DashboardScreen() {
             }
 
             item {
+                if (uiState.isDeviceOwner && (!uiState.accessibilityServiceEnabled || !uiState.accessibilityServiceRunning)) {
+                    ElevatedCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.elevatedCardColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer
+                        ),
+                        shape = MaterialTheme.shapes.large
+                    ) {
+                        Column(modifier = Modifier.padding(20.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    Icons.Default.Warning,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Text(
+                                    text = "Accessibility Required",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = uiState.accessibilityDegradedReason
+                                    ?: "Destination needs Accessibility for real-time blocking and service recovery.",
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Button(
+                                onClick = {
+                                    context.startActivity(
+                                        Intent(context, com.ankit.destination.ui.AccessibilityGuideActivity::class.java)
+                                    )
+                                }
+                            ) {
+                                Text("Open Accessibility")
+                            }
+                        }
+                    }
+                }
+            }
+
+            item {
                 AnimatedVisibility(
                     visible = true,
                     enter = fadeIn() + expandVertically(),
@@ -189,7 +234,7 @@ fun DashboardScreen() {
                                 )
                                 StatItem(
                                     icon = Icons.Default.Group,
-                                    value = uiState.blockedGroups.size,
+                                    value = uiState.activeSchedules,
                                     label = "Groups Blocked",
                                     iconTint = MaterialTheme.colorScheme.error
                                 )
@@ -200,6 +245,22 @@ fun DashboardScreen() {
                                     iconTint = MaterialTheme.colorScheme.error
                                 )
                             }
+                        }
+                    }
+                }
+            }
+
+            uiState.nextPolicyWake?.let { nextWake ->
+                item {
+                    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text(
+                                text = "Next Policy Wake",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(text = nextWake)
                         }
                     }
                 }
