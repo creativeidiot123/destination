@@ -367,7 +367,11 @@ internal class PolicyApplier(
             )
         }
         return PolicyApplyDelta(
-            toSuspend = desired.suspendTargets - currentSuspended,
+            toSuspend = if (tracked.refreshExistingSuspendedPackages) {
+                desired.suspendTargets
+            } else {
+                desired.suspendTargets - currentSuspended
+            },
             toUnsuspend = currentSuspended - desired.suspendTargets,
             toProtectUninstall = desired.uninstallProtected - currentUninstallProtected,
             toUnprotectUninstall = currentUninstallProtected - desired.uninstallProtected,

@@ -56,6 +56,37 @@ class PolicyEngine private constructor(
     @Volatile private var policyControlsCache: PolicyControls? = null
     private val enforcementStateSnapshot = EnforcementStateSnapshotCache(buildEnforcementStateFromStore())
 
+    internal class EnforcementStateSnapshotCache(initialState: EnforcementStateEntity) {
+        @Volatile
+        private var currentState: EnforcementStateEntity = initialState
+
+        @Volatile
+        private var persistedStateLoaded: Boolean = false
+
+        private val lock = Any()
+
+        fun current(): EnforcementStateEntity = currentState
+
+        suspend fun loadFromPersistence(loader: suspend () -> EnforcementStateEntity): EnforcementStateEntity {
+            if (persistedStateLoaded) return currentState
+            val loadedState = loader()
+            synchronized(lock) {
+                if (!persistedStateLoaded) {
+                    currentState = loadedState
+                    persistedStateLoaded = true
+                }
+                return currentState
+            }
+        }
+
+        fun persist(state: EnforcementStateEntity) {
+            synchronized(lock) {
+                currentState = state
+                persistedStateLoaded = true
+            }
+        }
+    }
+
     private fun buildEnforcementStateFromStore(): EnforcementStateEntity {
         return EnforcementStateEntity(
             scheduleLockComputed = store.isScheduleLockComputed(),
@@ -1459,8 +1490,11 @@ class PolicyEngine private constructor(
             "Applying mode=${state.mode} reason=$reason allowlist=${state.lockTaskAllowlist.size} suspend=${state.suspendTargets.size}"
         )
 
-        val applyResult = applier.apply(state, hostActivity)
-        val verification = applyResult.verification ?: applier.verify(state, hostActivity)
+        val applyState = state.copy(
+            refreshExistingSuspendedPackages = shouldRefreshExistingSuspensions(triggerBatch)
+        )
+        val applyResult = applier.apply(applyState, hostActivity)
+        val verification = applyResult.verification ?: applier.verify(applyState, hostActivity)
         val success = applyResult.errors.isEmpty() &&
             verification.passed &&
             !applyResult.coreFailure &&
@@ -1475,16 +1509,22 @@ class PolicyEngine private constructor(
                 }
             )
             store.setCurrentLockReason(external.lockReason)
-            persistApplyBookkeeping(state, applyResult, verification, null, triggerSummary = reason)
-            FocusLog.i(FocusEventId.POLICY_APPLY_DONE, "Apply success mode=${state.mode}")
-            return EngineResult(true, "Policy applied", verification, state, applyResult.repairPlan)
+            persistApplyBookkeeping(applyState, applyResult, verification, null, triggerSummary = reason)
+            FocusLog.i(FocusEventId.POLICY_APPLY_DONE, "Apply success mode=${applyState.mode}")
+            return EngineResult(true, "Policy applied", verification, applyState, applyResult.repairPlan)
         }
 
         val errorMessage = buildList {
             addAll(applyResult.errors)
             addAll(verification.issues)
         }.joinToString(" | ")
-        val bookkeeping = persistApplyBookkeeping(state, applyResult, verification, errorMessage, triggerSummary = reason)
+        val bookkeeping = persistApplyBookkeeping(
+            applyState,
+            applyResult,
+            verification,
+            errorMessage,
+            triggerSummary = reason
+        )
         FocusLog.w(FocusEventId.MODE_CHANGE_FAIL, "Apply failed mode=$targetMode error=$errorMessage")
 
         val rollbackState = evaluator.evaluate(
@@ -1523,7 +1563,7 @@ class PolicyEngine private constructor(
             triggerSummary = "rollback:$reason"
         )
 
-        return EngineResult(false, "Policy failed: $errorMessage", verification, state, applyResult.repairPlan)
+        return EngineResult(false, "Policy failed: $errorMessage", verification, applyState, applyResult.repairPlan)
     }
 
     private fun failureResult(
@@ -1724,6 +1764,13 @@ class PolicyEngine private constructor(
         }
         alarmScheduler.cancelReliabilityTick()
         nextWakeAtMs?.let(alarmScheduler::scheduleNextTransition) ?: alarmScheduler.cancelNextTransition()
+    }
+
+    private fun shouldRefreshExistingSuspensions(triggerBatch: ApplyTriggerBatch): Boolean {
+        return triggerBatch.triggers.any { trigger ->
+            trigger.category == ApplyTriggerCategory.DIAGNOSTICS &&
+                trigger.source == "diagnostics_hidden_suspend"
+        }
     }
 
     private suspend fun orchestrateCurrentPolicy(
@@ -2666,37 +2713,6 @@ class PolicyEngine private constructor(
         // Coalesce/serialize policy applications across BootReceiver + UI to avoid interleaving DPM calls.
         private val APPLY_LOCK = Any()
         private val APPLY_MUTEX = Mutex()
-
-        internal class EnforcementStateSnapshotCache(initialState: EnforcementStateEntity) {
-            @Volatile
-            private var currentState: EnforcementStateEntity = initialState
-
-            @Volatile
-            private var persistedStateLoaded: Boolean = false
-
-            private val lock = Any()
-
-            fun current(): EnforcementStateEntity = currentState
-
-            suspend fun loadFromPersistence(loader: suspend () -> EnforcementStateEntity): EnforcementStateEntity {
-                if (persistedStateLoaded) return currentState
-                val loadedState = loader()
-                synchronized(lock) {
-                    if (!persistedStateLoaded) {
-                        currentState = loadedState
-                        persistedStateLoaded = true
-                    }
-                    return currentState
-                }
-            }
-
-            fun persist(state: EnforcementStateEntity) {
-                synchronized(lock) {
-                    currentState = state
-                    persistedStateLoaded = true
-                }
-            }
-        }
 
 
         internal fun resolveEmergencyApps(

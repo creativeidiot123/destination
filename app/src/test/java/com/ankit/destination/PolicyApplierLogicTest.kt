@@ -169,6 +169,28 @@ class PolicyApplierLogicTest {
     }
 
     @Test
+    fun apply_refreshExistingSuspendedPackages_resuspendsAlreadySuspendedTargets() {
+        val facade = FakeDevicePolicyClient().apply {
+            seedSuspended("a")
+        }
+        val applier = PolicyApplier(facade)
+
+        val result = applier.apply(
+            state = policyState(
+                suspendTargets = setOf("a"),
+                previouslySuspended = setOf("a"),
+                refreshExistingSuspendedPackages = true
+            )
+        )
+
+        assertTrue(result.errors.isEmpty())
+        assertEquals(
+            listOf(SuspendCall(packages = listOf("a"), suspended = true)),
+            facade.suspendCalls
+        )
+    }
+
+    @Test
     fun apply_turnsOffAdbWhenDeveloperRestrictionIsEnabled() {
         val facade = FakeDevicePolicyClient()
         val applier = PolicyApplier(facade)
@@ -228,7 +250,8 @@ class PolicyApplierLogicTest {
         suspendTargets: Set<String>,
         previouslySuspended: Set<String>,
         blockReasonsByPackage: Map<String, Set<String>> = emptyMap(),
-        restrictions: Set<String> = emptySet()
+        restrictions: Set<String> = emptySet(),
+        refreshExistingSuspendedPackages: Boolean = false
     ): PolicyState {
         return PolicyState(
             mode = ModeState.NORMAL,
@@ -252,7 +275,8 @@ class PolicyApplierLogicTest {
             touchGrassBreakActive = false,
             primaryReasonByPackage = emptyMap(),
             blockReasonsByPackage = blockReasonsByPackage,
-            globalControls = GlobalControls()
+            globalControls = GlobalControls(),
+            refreshExistingSuspendedPackages = refreshExistingSuspendedPackages
         )
     }
 

@@ -74,7 +74,8 @@ data class PolicyState(
     val touchGrassBreakActive: Boolean,
     val primaryReasonByPackage: Map<String, String>,
     val blockReasonsByPackage: Map<String, Set<String>> = emptyMap(),
-    val globalControls: GlobalControls
+    val globalControls: GlobalControls,
+    val refreshExistingSuspendedPackages: Boolean = false
 )
 
 data class DesiredDevicePolicyState(
