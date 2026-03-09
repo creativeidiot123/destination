@@ -32,9 +32,16 @@ data class EnforcementStateEntity(
     val lastUninstallProtectedPackagesEncoded: String = "",
     val lastAppliedAtMs: Long = 0L,
     val lastVerificationPassed: Boolean = false,
+    val lastVerificationIssuesEncoded: String = "",
     val lastError: String? = null,
     val lastSuccessfulApplyAtMs: Long = 0L,
-    val computedSnapshotVersion: Long = 0L
+    val computedSnapshotVersion: Long = 0L,
+    val integrityFindingsEncoded: String = "",
+    val lastIntegrityAuditAtMs: Long = 0L,
+    val startupRecoveryAtMs: Long = 0L,
+    val startupRecoveryTriggerSummary: String? = null,
+    val startupRecoveryStatus: String? = null,
+    val startupRecoveryDetail: String? = null
 ) {
     companion object {
         const val SINGLETON_ID = 1

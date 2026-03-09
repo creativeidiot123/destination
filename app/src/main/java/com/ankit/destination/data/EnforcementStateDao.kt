@@ -12,4 +12,7 @@ interface EnforcementStateDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(state: EnforcementStateEntity)
+
+    @Query("DELETE FROM enforcement_state")
+    suspend fun clear()
 }

@@ -173,6 +173,26 @@ data class EngineResult(
     val repairPlan: PolicyRepairPlan? = null
 )
 
+data class ApplyAuditEntry(
+    val atMs: Long,
+    val triggerSummary: String,
+    val desiredSuspendCount: Int,
+    val actualVerifiedSuspendCount: Int?,
+    val verificationPassed: Boolean,
+    val scheduleReason: String?,
+    val budgetReason: String?,
+    val warning: String?,
+    val repairTriggered: Boolean,
+    val recoveryPass: Boolean
+)
+
+data class StartupRecoverySnapshot(
+    val atMs: Long,
+    val triggerSummary: String?,
+    val status: String?,
+    val detail: String?
+)
+
 data class DiagnosticsSnapshot(
     val deviceOwner: Boolean,
     val desiredMode: ModeState,
@@ -219,7 +239,15 @@ data class DiagnosticsSnapshot(
     val statusBarDisabledExpected: Boolean,
     val lastAppliedAtMs: Long,
     val lastVerificationPassed: Boolean,
+    val lastVerificationIssues: List<String>,
     val lastError: String?,
+    val desiredBlockedPackages: Set<String>,
+    val actualSuspendedPackages: Set<String>,
+    val strictInstallStagedPackages: Set<String>,
+    val integrityFindings: List<String>,
+    val lastIntegrityAuditAtMs: Long,
+    val startupRecovery: StartupRecoverySnapshot?,
+    val applyAuditHistory: List<ApplyAuditEntry>,
     val hiddenSuspendPrototypeEnabled: Boolean,
     val packageSuspendBackend: String?,
     val packageSuspendPrototypeError: String?,

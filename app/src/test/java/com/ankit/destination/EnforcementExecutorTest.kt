@@ -86,4 +86,32 @@ class EnforcementExecutorTest {
         assertEquals(listOf(1, 3), executed.toList())
         assertEquals(listOf(2), dropped.toList())
     }
+
+    @Test
+    fun executeLatest_runsLatestQueuedTaskAfterCurrentTaskFails() {
+        val key = "failure-${System.nanoTime()}"
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val completed = CountDownLatch(1)
+        val executed = Collections.synchronizedList(mutableListOf<Int>())
+
+        EnforcementExecutor.executeLatest(key) {
+            started.countDown()
+            release.await(2, TimeUnit.SECONDS)
+            throw IllegalStateException("boom")
+        }
+        assertTrue(started.await(1, TimeUnit.SECONDS))
+
+        val replacementScheduled = EnforcementExecutor.executeLatest(key) {
+            executed += 2
+            completed.countDown()
+        }
+
+        assertFalse(replacementScheduled)
+        release.countDown()
+
+        assertTrue(completed.await(2, TimeUnit.SECONDS))
+        Thread.sleep(100)
+        assertEquals(listOf(2), executed.toList())
+    }
 }

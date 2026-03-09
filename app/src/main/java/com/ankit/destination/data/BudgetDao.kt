@@ -116,11 +116,6 @@ interface BudgetDao {
     @Query("DELETE FROM app_group_map WHERE packageName = :packageName")
     suspend fun deleteMappingsForPackage(packageName: String)
 
-    @Transaction
-    suspend fun upsertSingleGroupMapping(mapping: AppGroupMap) {
-        upsertMapping(mapping)
-    }
-
     @Query("DELETE FROM app_group_map WHERE packageName = :packageName AND groupId = :groupId")
     suspend fun deleteMapping(packageName: String, groupId: String)
 

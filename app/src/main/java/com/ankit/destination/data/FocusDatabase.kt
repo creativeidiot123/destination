@@ -11,6 +11,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
     entities = [
         ScheduleBlock::class,
         ScheduleBlockGroup::class,
+        ScheduleBlockApp::class,
         AppPolicy::class,
         GroupLimit::class,
         AppGroupMap::class,
@@ -23,15 +24,17 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         AlwaysBlockedApp::class,
         UninstallProtectedApp::class,
         HiddenApp::class,
-        EnforcementStateEntity::class
+        EnforcementStateEntity::class,
+        ApplyAuditEntryEntity::class
     ],
-    version = 16,
+    version = 17,
     exportSchema = false
 )
 abstract class FocusDatabase : RoomDatabase() {
     abstract fun scheduleDao(): ScheduleDao
     abstract fun budgetDao(): BudgetDao
     abstract fun enforcementStateDao(): EnforcementStateDao
+    abstract fun applyAuditDao(): ApplyAuditDao
 
     companion object {
         @Volatile
@@ -64,7 +67,8 @@ abstract class FocusDatabase : RoomDatabase() {
                 MIGRATION_12_13,
                 MIGRATION_13_14,
                 MIGRATION_14_15,
-                MIGRATION_15_16
+                MIGRATION_15_16,
+                MIGRATION_16_17
             )
                 .build()
         }
@@ -510,6 +514,94 @@ abstract class FocusDatabase : RoomDatabase() {
                             WHEN `budgetUsageAccessGranted` = 1 THEN 'OK'
                             ELSE 'ACCESS_MISSING'
                         END
+                    """.trimIndent()
+                )
+            }
+        }
+
+        private val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `schedule_block_apps` (
+                        `blockId` INTEGER NOT NULL,
+                        `packageName` TEXT NOT NULL,
+                        PRIMARY KEY(`blockId`, `packageName`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    INSERT OR REPLACE INTO `schedule_block_apps` (`blockId`, `packageName`)
+                    SELECT `blockId`, TRIM(SUBSTR(`groupId`, 5))
+                    FROM `schedule_block_groups`
+                    WHERE TRIM(`groupId`) LIKE 'app:%'
+                      AND TRIM(SUBSTR(`groupId`, 5)) <> ''
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    DELETE FROM `schedule_block_groups`
+                    WHERE TRIM(`groupId`) LIKE 'app:%'
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `apply_audit_entries` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `atMs` INTEGER NOT NULL,
+                        `triggerSummary` TEXT NOT NULL,
+                        `desiredSuspendCount` INTEGER NOT NULL,
+                        `actualVerifiedSuspendCount` INTEGER,
+                        `verificationPassed` INTEGER NOT NULL,
+                        `scheduleReason` TEXT,
+                        `budgetReason` TEXT,
+                        `warning` TEXT,
+                        `repairTriggered` INTEGER NOT NULL,
+                        `recoveryPass` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    ALTER TABLE `enforcement_state`
+                    ADD COLUMN `lastVerificationIssuesEncoded` TEXT NOT NULL DEFAULT ''
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    ALTER TABLE `enforcement_state`
+                    ADD COLUMN `integrityFindingsEncoded` TEXT NOT NULL DEFAULT ''
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    ALTER TABLE `enforcement_state`
+                    ADD COLUMN `lastIntegrityAuditAtMs` INTEGER NOT NULL DEFAULT 0
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    ALTER TABLE `enforcement_state`
+                    ADD COLUMN `startupRecoveryAtMs` INTEGER NOT NULL DEFAULT 0
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    ALTER TABLE `enforcement_state`
+                    ADD COLUMN `startupRecoveryTriggerSummary` TEXT
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    ALTER TABLE `enforcement_state`
+                    ADD COLUMN `startupRecoveryStatus` TEXT
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    ALTER TABLE `enforcement_state`
+                    ADD COLUMN `startupRecoveryDetail` TEXT
                     """.trimIndent()
                 )
             }

@@ -24,6 +24,14 @@ class DestinationApplication : Application() {
         )
         AlarmScheduler(this).scheduleUsageAccessPollIfNeeded()
         PackageChangeReceiver.ensureRuntimeRegistration(this)
+        PolicyApplyOrchestrator.requestApply(
+            context = this,
+            trigger = ApplyTrigger(
+                category = ApplyTriggerCategory.PROCESS_START,
+                source = "destination_application",
+                detail = "process_start"
+            )
+        )
         registerActivityLifecycleCallbacks(
             object : ActivityLifecycleCallbacks {
                 private var startedActivityCount: Int = 0

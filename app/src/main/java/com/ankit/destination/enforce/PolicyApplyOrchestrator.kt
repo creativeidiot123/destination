@@ -277,11 +277,18 @@ object PolicyApplyOrchestrator {
 
             val outcome = runCatching {
                 val engine = PolicyEngine(context)
+                val startupTrigger = triggerBatch.triggers
+                    .filter { it.category in STARTUP_CATEGORIES }
+                    .maxByOrNull(ApplyTrigger::atMs)
                 val result = runBlocking {
-                    engine.requestApplyNowAsync(
-                        hostActivity = hostActivity,
-                        triggerBatch = triggerBatch
-                    )
+                    if (startupTrigger != null) {
+                        engine.recoverAndReconcileAtStartup(startupTrigger)
+                    } else {
+                        engine.requestApplyNowAsync(
+                            hostActivity = hostActivity,
+                            triggerBatch = triggerBatch
+                        )
+                    }
                 }
                 ApplyOutcome(result = result, error = null)
             }.getOrElse { throwable ->
@@ -331,4 +338,10 @@ object PolicyApplyOrchestrator {
             detail = detail
         )
     }
+
+    private val STARTUP_CATEGORIES = setOf(
+        ApplyTriggerCategory.BOOT,
+        ApplyTriggerCategory.USER_UNLOCKED,
+        ApplyTriggerCategory.PROCESS_START
+    )
 }

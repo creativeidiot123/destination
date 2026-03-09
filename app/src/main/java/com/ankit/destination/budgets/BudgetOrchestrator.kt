@@ -45,7 +45,7 @@ internal class BudgetOrchestrator(context: Context) : PolicyBudgetClient {
     private val usageReader by lazy { UsageReader(appContext) }
     private val usageStatsManager by lazy { appContext.getSystemService(UsageStatsManager::class.java) }
     @Volatile
-    private var lastSuccessfulUsageInputs: UsageInputs? = null
+    private var lastSuccessfulUsageSnapshot: CachedUsageSnapshot? = null
 
     suspend fun readUsageSnapshot(): UsageSnapshotResult = readUsageSnapshot(ZonedDateTime.now())
 
@@ -67,6 +67,7 @@ internal class BudgetOrchestrator(context: Context) : PolicyBudgetClient {
 
         val dayStartMs = UsageWindow.startOfDayMs(now)
         val hourStartMs = UsageWindow.startOfHourMs(now)
+        val dayKey = UsageWindow.dayKey(now)
         val usageInputs = runCatching {
             UsageInputs(
                 usedTodayMs = queryAggregateUsageMs(dayStartMs, nowMs),
@@ -75,13 +76,22 @@ internal class BudgetOrchestrator(context: Context) : PolicyBudgetClient {
             )
         }.getOrElse { throwable ->
             FocusLog.e(FocusEventId.BUDGET_EVAL, "Usage ingestion failed", throwable)
+            val fallbackUsageInputs = lastSuccessfulUsageSnapshot
+                ?.takeIf { canReuseFallbackSnapshot(it, dayKey, hourStartMs) }
+                ?.usageInputs
+                ?: UsageInputs(emptyMap(), emptyMap(), emptyMap())
             return@withContext UsageSnapshotResult(
-                usageInputs = lastSuccessfulUsageInputs ?: UsageInputs(emptyMap(), emptyMap(), emptyMap()),
+                usageInputs = fallbackUsageInputs,
                 status = UsageSnapshotStatus.INGESTION_FAILED,
                 nextCheckAtMs = minOf(boundaryCheckAtMs, nowMs + INGESTION_FAILURE_RETRY_MS)
             )
         }
-        lastSuccessfulUsageInputs = usageInputs
+        lastSuccessfulUsageSnapshot = CachedUsageSnapshot(
+            usageInputs = usageInputs,
+            dayKey = dayKey,
+            hourStartMs = hourStartMs,
+            capturedAtMs = nowMs
+        )
 
         // Log top 5 apps by daily usage
         val topApps = usageInputs.usedTodayMs.entries.sortedByDescending { it.value }.take(5)
@@ -231,7 +241,22 @@ internal class BudgetOrchestrator(context: Context) : PolicyBudgetClient {
         ).timeMsByPkg
     }
 
-    private companion object {
-        const val INGESTION_FAILURE_RETRY_MS = 5L * 60_000L
+    internal data class CachedUsageSnapshot(
+        val usageInputs: UsageInputs,
+        val dayKey: String,
+        val hourStartMs: Long,
+        val capturedAtMs: Long
+    )
+
+    companion object {
+        private const val INGESTION_FAILURE_RETRY_MS = 5L * 60_000L
+
+        internal fun canReuseFallbackSnapshot(
+            cachedSnapshot: CachedUsageSnapshot,
+            dayKey: String,
+            hourStartMs: Long
+        ): Boolean {
+            return cachedSnapshot.dayKey == dayKey && cachedSnapshot.hourStartMs == hourStartMs
+        }
     }
 }

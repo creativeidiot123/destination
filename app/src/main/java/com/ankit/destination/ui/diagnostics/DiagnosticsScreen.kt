@@ -466,6 +466,136 @@ fun DiagnosticsScreen(
                     }
                 }
 
+                uiState.snapshot?.let { snapshot ->
+                    item {
+                        ElevatedCard(
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                            colors = CardDefaults.elevatedCardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                            )
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Text(
+                                    "Recovery & Integrity",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    "Desired blocked packages: ${
+                                        snapshot.desiredBlockedPackages.sorted().joinToString().ifBlank { "None" }
+                                    }",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    "Actual suspended packages: ${
+                                        snapshot.actualSuspendedPackages.sorted().joinToString().ifBlank { "None" }
+                                    }",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    "Strict-install staged packages: ${
+                                        snapshot.strictInstallStagedPackages.sorted().joinToString().ifBlank { "None" }
+                                    }",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    "Last verification mismatches: ${
+                                        snapshot.lastVerificationIssues.joinToString().ifBlank { "None" }
+                                    }",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    "Active schedule warning: ${snapshot.scheduleTargetWarning ?: "None"}",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    "Usage snapshot status: ${snapshot.usageSnapshotStatus.name}",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    "Next wake reason: ${snapshot.nextPolicyWakeReason ?: "None"}",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    "Integrity findings (${formatTime(snapshot.lastIntegrityAuditAtMs)}): ${
+                                        snapshot.integrityFindings.joinToString().ifBlank { "None" }
+                                    }",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                snapshot.startupRecovery?.let { recovery ->
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        "Startup recovery: ${recovery.status ?: "unknown"} @ ${formatTime(recovery.atMs)}",
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                    recovery.detail?.takeIf { it.isNotBlank() }?.let { detail ->
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            detail,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    item {
+                        ElevatedCard(
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                            colors = CardDefaults.elevatedCardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                            )
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Text(
+                                    "Recent Apply Audits",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                if (snapshot.applyAuditHistory.isEmpty()) {
+                                    Text(
+                                        "No audit history recorded yet.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                } else {
+                                    snapshot.applyAuditHistory.forEach { audit ->
+                                        Text(
+                                            "${formatTime(audit.atMs)} | ${audit.triggerSummary} | desired=${audit.desiredSuspendCount} verified=${audit.actualVerifiedSuspendCount ?: "n/a"} | passed=${audit.verificationPassed} | repair=${audit.repairTriggered}",
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                        val secondary = listOfNotNull(
+                                            audit.scheduleReason,
+                                            audit.budgetReason,
+                                            audit.warning
+                                        ).joinToString(" | ")
+                                        if (secondary.isNotBlank()) {
+                                            Spacer(modifier = Modifier.height(2.dp))
+                                            Text(
+                                                secondary,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 item {
                     ElevatedCard(
                         modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),

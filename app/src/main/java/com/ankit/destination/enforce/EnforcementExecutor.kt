@@ -34,36 +34,32 @@ object EnforcementExecutor {
                 FocusLog.d(FocusEventId.ENFORCE_EXEC, "executeLatest($key) QUEUED new")
                 executor.execute {
                     var taskToRun = queuedTask
-                    try {
-                        while (true) {
-                            val startNs = System.nanoTime()
-                            FocusLog.d(FocusEventId.ENFORCE_EXEC, "executeLatest($key) EXECUTING")
+                    while (true) {
+                        val startNs = System.nanoTime()
+                        FocusLog.d(FocusEventId.ENFORCE_EXEC, "executeLatest($key) EXECUTING")
+                        runCatching {
                             taskToRun.task()
+                        }.onSuccess {
                             val durationMs = (System.nanoTime() - startNs) / 1_000_000.0
                             FocusLog.d(FocusEventId.ENFORCE_EXEC, "executeLatest($key) DONE in %.1fms".format(durationMs))
-                            val nextTask = synchronized(latestTasks) {
-                                val current = latestTasks[key] ?: return@execute
-                                val replacement = current.queuedTask
-                                if (replacement == null) {
-                                    latestTasks.remove(key)
-                                } else {
-                                    current.queuedTask = null
-                                    FocusLog.d(FocusEventId.ENFORCE_EXEC, "executeLatest($key) has REPLACEMENT task")
-                                }
-                                replacement
-                            }
-                            if (nextTask == null) {
-                                return@execute
-                            }
-                            taskToRun = nextTask
+                        }.onFailure { throwable ->
+                            FocusLog.e(FocusEventId.ENFORCE_EXEC, "executeLatest($key) FAILED: ${throwable.message}", throwable)
                         }
-                    } catch (t: Throwable) {
-                        FocusLog.e(FocusEventId.ENFORCE_EXEC, "executeLatest($key) FAILED: ${t.message}", t)
-                    } finally {
-                        val queuedForDrop = synchronized(latestTasks) {
-                            latestTasks.remove(key)?.queuedTask
+                        val nextTask = synchronized(latestTasks) {
+                            val current = latestTasks[key] ?: return@execute
+                            val replacement = current.queuedTask
+                            if (replacement == null) {
+                                latestTasks.remove(key)
+                            } else {
+                                current.queuedTask = null
+                                FocusLog.d(FocusEventId.ENFORCE_EXEC, "executeLatest($key) has REPLACEMENT task")
+                            }
+                            replacement
                         }
-                        dropQueuedTask(queuedForDrop)
+                        if (nextTask == null) {
+                            return@execute
+                        }
+                        taskToRun = nextTask
                     }
                 }
                 return true

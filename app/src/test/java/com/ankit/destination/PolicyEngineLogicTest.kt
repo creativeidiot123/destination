@@ -1,5 +1,6 @@
 package com.ankit.destination
 
+import com.ankit.destination.data.EnforcementStateEntity
 import com.ankit.destination.data.ScheduleBlock
 import com.ankit.destination.data.ScheduleBlockKind
 import com.ankit.destination.policy.ModeState
@@ -15,6 +16,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlinx.coroutines.test.runTest
 import java.time.ZonedDateTime
 
 class PolicyEngineLogicTest {
@@ -113,6 +115,40 @@ class PolicyEngineLogicTest {
         val strictActive = PolicyEngine.resolveStrictScheduleActive(scheduleStrictActive = false)
 
         assertFalse(strictActive)
+    }
+
+    @Test
+    fun enforcementStateSnapshotCache_persistUpdatesCurrentStateImmediately() {
+        val initial = EnforcementStateEntity(scheduleLockEnforced = false, computedSnapshotVersion = 1L)
+        val updated = initial.copy(scheduleLockEnforced = true, computedSnapshotVersion = 2L)
+        val cache = PolicyEngine.EnforcementStateSnapshotCache(initial)
+
+        cache.persist(updated)
+
+        assertTrue(cache.current().scheduleLockEnforced)
+        assertEquals(2L, cache.current().computedSnapshotVersion)
+    }
+
+    @Test
+    fun enforcementStateSnapshotCache_loadFromPersistenceHydratesOnlyOnce() = runTest {
+        val initial = EnforcementStateEntity(scheduleLockEnforced = false, computedSnapshotVersion = 1L)
+        val persisted = initial.copy(scheduleLockEnforced = true, computedSnapshotVersion = 3L)
+        val cache = PolicyEngine.EnforcementStateSnapshotCache(initial)
+        var loadCount = 0
+
+        val first = cache.loadFromPersistence {
+            loadCount += 1
+            persisted
+        }
+        val second = cache.loadFromPersistence {
+            loadCount += 1
+            initial.copy(scheduleLockEnforced = false, computedSnapshotVersion = 4L)
+        }
+
+        assertTrue(first.scheduleLockEnforced)
+        assertTrue(second.scheduleLockEnforced)
+        assertEquals(3L, cache.current().computedSnapshotVersion)
+        assertEquals(1, loadCount)
     }
 
     @Test
@@ -343,9 +379,9 @@ class PolicyEngineLogicTest {
         assertTrue(targets.targetedActiveBlockIds.isEmpty())
         assertTrue(targets.scheduledGroupIds.isEmpty())
         assertTrue(targets.scheduledAppPackages.isEmpty())
-        assertEquals(ScheduleTargetDiagnosticCode.NO_EFFECTIVE_TARGETS, targets.diagnosticCode)
+        assertEquals(ScheduleTargetDiagnosticCode.NO_EFFECTIVE_GROUP_AND_APP_TARGETS, targets.diagnosticCode)
         assertEquals(
-            "Schedule window active but no effective installed or valid targets: Strict social",
+            "Schedule window active but group targets are invalid and app targets are not installed: Strict social",
             targets.warning
         )
     }

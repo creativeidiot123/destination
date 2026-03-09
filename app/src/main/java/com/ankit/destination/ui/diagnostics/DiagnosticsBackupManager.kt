@@ -15,6 +15,7 @@ import com.ankit.destination.data.GroupEmergencyConfig
 import com.ankit.destination.data.GroupLimit
 import com.ankit.destination.data.HiddenApp
 import com.ankit.destination.data.ScheduleBlock
+import com.ankit.destination.data.ScheduleBlockApp
 import com.ankit.destination.data.ScheduleBlockGroup
 import com.ankit.destination.data.UninstallProtectedApp
 import com.ankit.destination.data.UsageSnapshot
@@ -66,6 +67,7 @@ class DiagnosticsBackupManager(context: Context) {
             put("globalControls", budgetDao.getGlobalControls()?.toJson() ?: JSONObject.NULL)
             put("scheduleBlocks", scheduleDao.getAllBlocks().toJsonArray { it.toJson() })
             put("scheduleBlockGroups", scheduleDao.getAllBlockGroups().toJsonArray { it.toJson() })
+            put("scheduleBlockApps", scheduleDao.getAllBlockApps().toJsonArray { it.toJson() })
             put("appPolicies", budgetDao.getAllAppPolicies().toJsonArray { it.toJson() })
             put("groupLimits", budgetDao.getAllGroupLimits().toJsonArray { it.toJson() })
             put("appGroupMappings", budgetDao.getAllMappings().toJsonArray { it.toJson() })
@@ -89,15 +91,30 @@ class DiagnosticsBackupManager(context: Context) {
     private fun parseBackupJson(raw: String): BackupSnapshot {
         val root = JSONObject(raw)
         val version = root.optInt("version", -1)
-        require(version == BACKUP_VERSION) {
+        require(version == 1 || version == BACKUP_VERSION) {
             "Unsupported backup version: $version"
+        }
+        val legacyScheduleGroups = root.optJSONArray("scheduleBlockGroups")
+            .toList { it.toScheduleBlockGroup() }
+        val scheduleBlockApps = if (version >= 2) {
+            root.optJSONArray("scheduleBlockApps").toList { it.toScheduleBlockApp() }
+        } else {
+            legacyScheduleGroups
+                .asSequence()
+                .mapNotNull { row ->
+                    decodeLegacyScheduleAppTarget(row.groupId)?.let { packageName ->
+                        ScheduleBlockApp(blockId = row.blockId, packageName = packageName)
+                    }
+                }
+                .toList()
         }
         return BackupSnapshot(
             preferences = DiagnosticsPreferenceJsonCodec.fromJson(root.getJSONObject("preferences")),
             globalControls = root.optJSONObject("globalControls")?.toGlobalControls(),
             scheduleBlocks = root.optJSONArray("scheduleBlocks").toList { it.toScheduleBlock() },
-            scheduleBlockGroups = root.optJSONArray("scheduleBlockGroups")
-                .toList { it.toScheduleBlockGroup() },
+            scheduleBlockGroups = legacyScheduleGroups
+                .filterNot { decodeLegacyScheduleAppTarget(it.groupId) != null },
+            scheduleBlockApps = scheduleBlockApps,
             appPolicies = root.optJSONArray("appPolicies").toList { it.toAppPolicy() },
             groupLimits = root.optJSONArray("groupLimits").toList { it.toGroupLimit() },
             appGroupMappings = root.optJSONArray("appGroupMappings").toList { it.toAppGroupMap() },
@@ -117,13 +134,18 @@ class DiagnosticsBackupManager(context: Context) {
     private suspend fun restoreSnapshot(snapshot: BackupSnapshot) {
         val scheduleDao = db.scheduleDao()
         val budgetDao = db.budgetDao()
+        val enforcementStateDao = db.enforcementStateDao()
         db.withTransaction {
             scheduleDao.clearAllSchedules()
             budgetDao.resetAllPolicyData(snapshot.globalControls ?: GlobalControls())
+            enforcementStateDao.clear()
 
             snapshot.scheduleBlocks.forEach { scheduleDao.upsert(it) }
             if (snapshot.scheduleBlockGroups.isNotEmpty()) {
                 scheduleDao.insertBlockGroups(snapshot.scheduleBlockGroups)
+            }
+            if (snapshot.scheduleBlockApps.isNotEmpty()) {
+                scheduleDao.insertBlockApps(snapshot.scheduleBlockApps)
             }
             snapshot.appPolicies.forEach { budgetDao.upsertAppPolicy(it) }
             snapshot.groupLimits.forEach { budgetDao.upsertGroupLimit(it) }
@@ -152,6 +174,7 @@ class DiagnosticsBackupManager(context: Context) {
         val globalControls: GlobalControls?,
         val scheduleBlocks: List<ScheduleBlock>,
         val scheduleBlockGroups: List<ScheduleBlockGroup>,
+        val scheduleBlockApps: List<ScheduleBlockApp>,
         val appPolicies: List<AppPolicy>,
         val groupLimits: List<GroupLimit>,
         val appGroupMappings: List<AppGroupMap>,
@@ -189,6 +212,13 @@ class DiagnosticsBackupManager(context: Context) {
                     .filter { it.groupId.isNotBlank() && it.blockId in validBlockIds }
                     .distinctBy { it.blockId to it.groupId }
                     .sortedWith(compareBy<ScheduleBlockGroup> { it.blockId }.thenBy { it.groupId })
+                    .toList(),
+                scheduleBlockApps = scheduleBlockApps
+                    .asSequence()
+                    .map { it.copy(packageName = it.packageName.trim()) }
+                    .filter { it.packageName.isNotBlank() && it.blockId in validBlockIds }
+                    .distinctBy { it.blockId to it.packageName }
+                    .sortedWith(compareBy<ScheduleBlockApp> { it.blockId }.thenBy { it.packageName })
                     .toList(),
                 appPolicies = appPolicies
                     .asSequence()
@@ -380,6 +410,18 @@ class DiagnosticsBackupManager(context: Context) {
         )
     }
 
+    private fun ScheduleBlockApp.toJson(): JSONObject = JSONObject().apply {
+        put("blockId", blockId)
+        put("packageName", packageName)
+    }
+
+    private fun JSONObject.toScheduleBlockApp(): ScheduleBlockApp {
+        return ScheduleBlockApp(
+            blockId = getLong("blockId"),
+            packageName = getString("packageName")
+        )
+    }
+
     private fun AppPolicy.toJson(): JSONObject = JSONObject().apply {
         put("packageName", packageName)
         put("dailyLimitMs", dailyLimitMs)
@@ -559,7 +601,16 @@ class DiagnosticsBackupManager(context: Context) {
     }
 
     companion object {
-        private const val BACKUP_VERSION = 1
+        private const val BACKUP_VERSION = 2
+
+        private fun decodeLegacyScheduleAppTarget(raw: String): String? {
+            val trimmed = raw.trim()
+            return if (trimmed.startsWith("app:") && trimmed.length > 4) {
+                trimmed.removePrefix("app:").trim().takeIf(String::isNotBlank)
+            } else {
+                null
+            }
+        }
 
         private fun sanitizePackages(values: Collection<String>): List<String> {
             return values.asSequence()

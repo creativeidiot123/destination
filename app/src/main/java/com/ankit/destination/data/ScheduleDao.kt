@@ -21,6 +21,9 @@ interface ScheduleDao {
     @Query("SELECT * FROM schedule_block_groups")
     suspend fun getAllBlockGroups(): List<ScheduleBlockGroup>
 
+    @Query("SELECT * FROM schedule_block_apps")
+    suspend fun getAllBlockApps(): List<ScheduleBlockApp>
+
     @Query(
         """
         SELECT sbg.* FROM schedule_block_groups sbg
@@ -30,6 +33,16 @@ interface ScheduleDao {
         """
     )
     suspend fun getEnabledBlockGroups(): List<ScheduleBlockGroup>
+
+    @Query(
+        """
+        SELECT sba.* FROM schedule_block_apps sba
+        INNER JOIN schedule_blocks sb ON sb.`id` = sba.`blockId`
+        WHERE sb.enabled = 1
+        ORDER BY sba.`blockId` ASC, sba.`packageName` ASC
+        """
+    )
+    suspend fun getEnabledBlockApps(): List<ScheduleBlockApp>
 
     @Query("SELECT groupId FROM schedule_block_groups WHERE blockId = :blockId ORDER BY groupId ASC")
     suspend fun getGroupsForBlock(blockId: Long): List<String>
@@ -47,8 +60,14 @@ interface ScheduleDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertBlockGroups(rows: List<ScheduleBlockGroup>)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertBlockApps(rows: List<ScheduleBlockApp>)
+
     @Query("DELETE FROM schedule_block_groups WHERE blockId = :blockId")
     suspend fun deleteGroupsForBlock(blockId: Long)
+
+    @Query("DELETE FROM schedule_block_apps WHERE blockId = :blockId")
+    suspend fun deleteAppsForBlock(blockId: Long)
 
     @Query("DELETE FROM schedule_block_groups WHERE blockId = :blockId AND groupId = :groupId")
     suspend fun deleteGroupForBlock(blockId: Long, groupId: String)
@@ -62,12 +81,23 @@ interface ScheduleDao {
     @Query("DELETE FROM schedule_block_groups")
     suspend fun deleteAllBlockGroups()
 
+    @Query("DELETE FROM schedule_block_apps")
+    suspend fun deleteAllBlockApps()
+
     @Transaction
     suspend fun replaceGroupsForBlock(blockId: Long, groupIds: List<String>) {
         deleteGroupsForBlock(blockId)
         val clean = groupIds.map { it.trim() }.filter { it.isNotBlank() }.distinct()
         if (clean.isEmpty()) return
         insertBlockGroups(clean.map { ScheduleBlockGroup(blockId = blockId, groupId = it) })
+    }
+
+    @Transaction
+    suspend fun replaceAppsForBlock(blockId: Long, packageNames: List<String>) {
+        deleteAppsForBlock(blockId)
+        val clean = packageNames.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        if (clean.isEmpty()) return
+        insertBlockApps(clean.map { ScheduleBlockApp(blockId = blockId, packageName = it) })
     }
 
     @Query("DELETE FROM schedule_blocks WHERE id = :blockId")
@@ -79,6 +109,7 @@ interface ScheduleDao {
     @Transaction
     suspend fun deleteBlockWithGroups(blockId: Long) {
         deleteGroupsForBlock(blockId)
+        deleteAppsForBlock(blockId)
         deleteBlockById(blockId)
     }
 
@@ -102,6 +133,7 @@ interface ScheduleDao {
     @Transaction
     suspend fun clearAllSchedules() {
         deleteAllBlockGroups()
+        deleteAllBlockApps()
         deleteAllBlocks()
     }
 
@@ -109,7 +141,8 @@ interface ScheduleDao {
     suspend fun getEnabledScheduleSnapshot(): EnabledScheduleSnapshot {
         return EnabledScheduleSnapshot(
             blocks = getEnabledBlocks(),
-            blockGroups = getEnabledBlockGroups()
+            blockGroups = getEnabledBlockGroups(),
+            blockApps = getEnabledBlockApps()
         )
     }
 
@@ -119,5 +152,6 @@ interface ScheduleDao {
 
 data class EnabledScheduleSnapshot(
     val blocks: List<ScheduleBlock>,
-    val blockGroups: List<ScheduleBlockGroup>
+    val blockGroups: List<ScheduleBlockGroup>,
+    val blockApps: List<ScheduleBlockApp>
 )

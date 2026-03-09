@@ -7,6 +7,7 @@ import android.net.NetworkCapabilities
 import com.ankit.destination.budgets.BudgetOrchestrator
 import com.ankit.destination.budgets.PolicyBudgetClient
 import com.ankit.destination.data.AppGroupMap
+import com.ankit.destination.data.ApplyAuditEntryEntity
 import com.ankit.destination.data.AppPolicy
 import com.ankit.destination.data.EmergencyState
 import com.ankit.destination.data.EmergencyStateMerger
@@ -18,7 +19,9 @@ import com.ankit.destination.data.GroupEmergencyConfig
 import com.ankit.destination.data.HiddenApp
 import com.ankit.destination.data.GroupLimit
 import com.ankit.destination.data.GroupTargetMode
+import com.ankit.destination.data.ScheduleBlockApp
 import com.ankit.destination.data.ScheduleBlockGroup
+import com.ankit.destination.data.ScheduleTargetType
 import com.ankit.destination.enforce.AccessibilityStatusMonitor
 import com.ankit.destination.packages.PackageChangeReceiver
 import com.ankit.destination.schedule.AlarmScheduler
@@ -51,11 +54,10 @@ class PolicyEngine private constructor(
     private val evaluator = PolicyEvaluator(resolver, appContext.packageName)
     private val applier = PolicyApplier(facade, resolver)
     @Volatile private var policyControlsCache: PolicyControls? = null
+    private val enforcementStateSnapshot = EnforcementStateSnapshotCache(buildEnforcementStateFromStore())
 
-    private suspend fun loadEnforcementState(): EnforcementStateEntity {
-        val existing = db.enforcementStateDao().get()
-        if (existing != null) return existing
-        val bootstrapped = EnforcementStateEntity(
+    private fun buildEnforcementStateFromStore(): EnforcementStateEntity {
+        return EnforcementStateEntity(
             scheduleLockComputed = store.isScheduleLockComputed(),
             scheduleLockEnforced = store.isScheduleLockEnforced(),
             scheduleStrictComputed = store.isScheduleStrictComputed(),
@@ -81,12 +83,24 @@ class PolicyEngine private constructor(
             lastUninstallProtectedPackagesEncoded = EnforcementStateCodecs.encodeStringSet(store.getLastUninstallProtectedPackages()),
             lastAppliedAtMs = store.getLastAppliedAtMs(),
             lastVerificationPassed = store.getLastVerifyPassed(),
+            lastVerificationIssuesEncoded = "",
             lastError = store.getLastError(),
             lastSuccessfulApplyAtMs = if (store.hasSuccessfulPolicyApply()) store.getLastAppliedAtMs() else 0L,
             computedSnapshotVersion = 0L
         )
-        db.enforcementStateDao().upsert(bootstrapped)
-        return bootstrapped
+    }
+
+    private suspend fun loadEnforcementState(): EnforcementStateEntity {
+        return enforcementStateSnapshot.loadFromPersistence {
+            val existing = db.enforcementStateDao().get()
+            if (existing != null) {
+                existing
+            } else {
+                val bootstrapped = buildEnforcementStateFromStore()
+                db.enforcementStateDao().upsert(bootstrapped)
+                bootstrapped
+            }
+        }
     }
 
     private suspend fun persistEnforcementState(
@@ -95,6 +109,7 @@ class PolicyEngine private constructor(
         mirrorScheduleStrictEnforced: Boolean = state.scheduleStrictEnforced
     ) {
         db.enforcementStateDao().upsert(state)
+        enforcementStateSnapshot.persist(state)
         store.setComputedPolicyState(
             scheduleLockComputed = state.scheduleLockComputed,
             scheduleStrictComputed = state.scheduleStrictComputed,
@@ -126,7 +141,8 @@ class PolicyEngine private constructor(
         state: PolicyState,
         applyResult: ApplyResult,
         verification: PolicyVerificationResult,
-        errorMessage: String?
+        errorMessage: String?,
+        triggerSummary: String = "apply"
     ): ApplyBookkeeping {
         val actualSuspended = if (applyResult.observedState.suspensionAuthoritative) {
             applyResult.observedState.suspendedPackages
@@ -157,6 +173,9 @@ class PolicyEngine private constructor(
                 lastUninstallProtectedPackagesEncoded = EnforcementStateCodecs.encodeStringSet(actualUninstallProtected),
                 lastAppliedAtMs = nowMs,
                 lastVerificationPassed = verification.passed,
+                lastVerificationIssuesEncoded = EnforcementStateCodecs.encodeStringSet(
+                    verification.issues.toCollection(linkedSetOf())
+                ),
                 lastError = errorMessage,
                 lastSuccessfulApplyAtMs = if (errorMessage == null && verification.passed && applyResult.errors.isEmpty()) {
                     nowMs
@@ -168,10 +187,130 @@ class PolicyEngine private constructor(
             )
         )
         store.recordApply(state, applyResult, verification, errorMessage, appContext.packageName)
+        val persistedState = loadEnforcementState()
+        recordApplyAudit(
+            ApplyAuditEntry(
+                atMs = nowMs,
+                triggerSummary = triggerSummary,
+                desiredSuspendCount = state.suspendTargets.size,
+                actualVerifiedSuspendCount = applyResult.observedState.suspendedPackages.size
+                    .takeIf { applyResult.observedState.suspensionAuthoritative },
+                verificationPassed = verification.passed,
+                scheduleReason = state.lockReason,
+                budgetReason = persistedState.budgetReason,
+                warning = persistedState.scheduleTargetWarning,
+                repairTriggered = applyResult.repairPlan?.required == true,
+                recoveryPass = false
+            )
+        )
         return ApplyBookkeeping(
             actualSuspended = actualSuspended,
             actualUninstallProtected = actualUninstallProtected
         )
+    }
+
+    private suspend fun recordApplyAudit(entry: ApplyAuditEntry) {
+        db.applyAuditDao().insert(
+            ApplyAuditEntryEntity(
+                atMs = entry.atMs,
+                triggerSummary = entry.triggerSummary,
+                desiredSuspendCount = entry.desiredSuspendCount,
+                actualVerifiedSuspendCount = entry.actualVerifiedSuspendCount,
+                verificationPassed = entry.verificationPassed,
+                scheduleReason = entry.scheduleReason,
+                budgetReason = entry.budgetReason,
+                warning = entry.warning,
+                repairTriggered = entry.repairTriggered,
+                recoveryPass = entry.recoveryPass
+            )
+        )
+        db.applyAuditDao().trimToLatest(APPLY_AUDIT_RETENTION)
+    }
+
+    private suspend fun persistIntegrityFindings(findings: List<String>) {
+        val current = loadEnforcementState()
+        persistEnforcementState(
+            current.copy(
+                integrityFindingsEncoded = EnforcementStateCodecs.encodeStringSet(findings.toCollection(linkedSetOf())),
+                lastIntegrityAuditAtMs = clock.nowMs()
+            )
+        )
+    }
+
+    private suspend fun persistStartupRecovery(
+        triggerSummary: String,
+        status: String,
+        detail: String?
+    ) {
+        val current = loadEnforcementState()
+        persistEnforcementState(
+            current.copy(
+                startupRecoveryAtMs = clock.nowMs(),
+                startupRecoveryTriggerSummary = triggerSummary,
+                startupRecoveryStatus = status,
+                startupRecoveryDetail = detail
+            )
+        )
+    }
+
+    private suspend fun runIntegrityAudit(loaded: LoadedPolicySnapshot): List<String> {
+        val findings = linkedSetOf<String>()
+        val rawMappings = withContext(Dispatchers.IO) { db.budgetDao().getAllMappings() }
+        if (rawMappings.any { it.packageName.isBlank() }) {
+            findings += "Blank package names found in app_group_map"
+        }
+        if (rawMappings.any { it.groupId.isBlank() }) {
+            findings += "Blank group ids found in app_group_map"
+        }
+        val normalizedMappingCount = rawMappings
+            .asSequence()
+            .map { it.packageName.trim() to it.groupId.trim() }
+            .filter { it.first.isNotBlank() && it.second.isNotBlank() }
+            .distinct()
+            .count()
+        if (normalizedMappingCount != rawMappings.size) {
+            findings += "Duplicate-after-normalization rows found in app_group_map"
+        }
+
+        val validGroupIds = loaded.groupLimits.mapTo(linkedSetOf(), GroupLimit::groupId)
+        loaded.scheduleBlocks.forEach { block ->
+            val groupTargets = loaded.scheduleGroupTargetsByBlock[block.id].orEmpty()
+            val appTargets = loaded.scheduleAppTargetsByBlock[block.id].orEmpty()
+            val hasValidGroupTarget = groupTargets.any(validGroupIds::contains)
+            val hasValidAppTarget = appTargets.any(resolver::isPackageInstalled)
+            if (groupTargets.isEmpty() && appTargets.isEmpty()) {
+                findings += "Schedule '${block.name}' has no configured ${ScheduleTargetType.GROUP.name.lowercase()} or ${ScheduleTargetType.APP.name.lowercase()} targets"
+            } else if (!hasValidGroupTarget && !hasValidAppTarget) {
+                findings += "Schedule '${block.name}' has no valid group targets or installed app targets"
+            }
+        }
+
+        val activeScheduleTargets = resolveActiveScheduleTargets(
+            activeBlockIds = ScheduleEvaluator.evaluate(
+                now = clock.now(),
+                blocks = loaded.scheduleBlocks,
+                blockGroups = loaded.scheduleGroupTargetsByBlock
+            ).activeBlockIds,
+            scheduleBlocks = loaded.scheduleBlocks,
+            scheduleGroupTargetsByBlock = loaded.scheduleGroupTargetsByBlock,
+            scheduleAppTargetsByBlock = loaded.scheduleAppTargetsByBlock,
+            validGroupIds = validGroupIds,
+            isPackageInstalled = resolver::isPackageInstalled
+        )
+        if (activeScheduleTargets.warning != null) {
+            findings += activeScheduleTargets.warning
+        }
+
+        val groupMembers = loaded.mappings.groupBy(AppGroupMap::groupId) { it.packageName }
+        loaded.groupLimits.forEach { limit ->
+            val normalized = normalizeGroupPolicy(limit)
+            if (normalized.targetMode == GroupTargetMode.ALL_APPS) return@forEach
+            val validMembers = groupMembers[normalized.groupId].orEmpty().count(resolver::isPackageInstalled)
+            if (validMembers == 0) {
+                findings += "Enabled group '${normalized.groupId}' resolves to zero valid member packages"
+            }
+        }
+        return findings.toList()
     }
 
     constructor(context: Context) : this(
@@ -189,9 +328,7 @@ class PolicyEngine private constructor(
 
     fun getManualMode(): ModeState = store.getManualMode()
 
-    private fun currentEnforcementState(): EnforcementStateEntity = runBlocking {
-        loadEnforcementState()
-    }
+    private fun currentEnforcementState(): EnforcementStateEntity = enforcementStateSnapshot.current()
 
     fun isScheduleLockActive(): Boolean = currentEnforcementState().scheduleLockEnforced
 
@@ -652,6 +789,92 @@ class PolicyEngine private constructor(
         }
     }
 
+    suspend fun recoverAndReconcileAtStartup(trigger: ApplyTrigger): EngineResult {
+        return APPLY_MUTEX.withLock {
+            val triggerSummary = trigger.compatibilityLabel()
+            if (!isDeviceOwner()) {
+                val result = failureResult(
+                    message = "Not device owner",
+                    stateMode = store.getDesiredMode(),
+                    emergencyApps = getEmergencyApps()
+                )
+                persistStartupRecovery(triggerSummary, "skipped", result.message)
+                return@withLock result
+            }
+
+            val now = clock.now()
+            val loaded = loadPolicySnapshot(now)
+            val integrityFindings = runIntegrityAudit(loaded)
+            persistIntegrityFindings(integrityFindings)
+
+            val orchestrated = orchestrateCurrentPolicy(
+                now = now,
+                triggerBatch = ApplyTriggerBatch.single(trigger)
+            )
+            persistComputedState(orchestrated)
+            val external = computeExternalStateAsync(orchestrated.nowMs)
+            val trackedPackages = sanitizeTrackedPackagesAsync()
+            val desiredState = evaluateDesiredPolicyState(
+                mode = store.getDesiredMode(),
+                emergencyApps = getEmergencyApps(),
+                external = external,
+                trackedPackages = trackedPackages
+            )
+            val verification = applier.verify(desiredState, hostActivity = null)
+            val mismatchDetected = !verification.passed
+            if (mismatchDetected) {
+                val repaired = requestApplyNowLocked(
+                    hostActivity = null,
+                    triggerBatch = ApplyTriggerBatch.single(trigger)
+                )
+                persistStartupRecovery(triggerSummary, if (repaired.success) "repair_applied" else "repair_failed", repaired.message)
+                recordApplyAudit(
+                    ApplyAuditEntry(
+                        atMs = orchestrated.nowMs,
+                        triggerSummary = triggerSummary,
+                        desiredSuspendCount = repaired.state.suspendTargets.size,
+                        actualVerifiedSuspendCount = null,
+                        verificationPassed = repaired.verification.passed,
+                        scheduleReason = repaired.state.lockReason,
+                        budgetReason = currentEnforcementState().budgetReason,
+                        warning = currentEnforcementState().scheduleTargetWarning,
+                        repairTriggered = true,
+                        recoveryPass = true
+                    )
+                )
+                return@withLock repaired
+            }
+
+            syncNextAlarm(nowMs = orchestrated.nowMs)
+            persistStartupRecovery(
+                triggerSummary = triggerSummary,
+                status = "no_repair_needed",
+                detail = "Startup recovery verified desired policy and restored next wake"
+            )
+            recordApplyAudit(
+                ApplyAuditEntry(
+                    atMs = orchestrated.nowMs,
+                    triggerSummary = triggerSummary,
+                    desiredSuspendCount = desiredState.suspendTargets.size,
+                    actualVerifiedSuspendCount = null,
+                    verificationPassed = verification.passed,
+                    scheduleReason = desiredState.lockReason,
+                    budgetReason = currentEnforcementState().budgetReason,
+                    warning = currentEnforcementState().scheduleTargetWarning,
+                    repairTriggered = false,
+                    recoveryPass = true
+                )
+            )
+            EngineResult(
+                success = true,
+                message = "Startup recovery verified policy",
+                verification = verification,
+                state = desiredState,
+                repairPlan = null
+            )
+        }
+    }
+
     fun reapplyDesiredMode(hostActivity: Activity? = null, reason: String = "reapply"): EngineResult {
         return requestApplyNow(
             hostActivity = hostActivity,
@@ -864,9 +1087,24 @@ class PolicyEngine private constructor(
     fun verifyDesiredMode(hostActivity: Activity? = null): PolicyVerificationResult {
         val trackedPackages = sanitizeTrackedPackages()
         val external = computeExternalState()
-        val state = evaluator.evaluate(
+        val state = evaluateDesiredPolicyState(
             mode = store.getDesiredMode(),
             emergencyApps = getEmergencyApps(),
+            external = external,
+            trackedPackages = trackedPackages
+        )
+        return applier.verify(state, hostActivity)
+    }
+
+    private fun evaluateDesiredPolicyState(
+        mode: ModeState,
+        emergencyApps: Set<String>,
+        external: ExternalState,
+        trackedPackages: TrackedPackages
+    ): PolicyState {
+        return evaluator.evaluate(
+            mode = mode,
+            emergencyApps = emergencyApps,
             protectionSnapshot = external.protectionSnapshot,
             alwaysBlockedApps = external.policyControls.alwaysBlockedInstalledPackages,
             strictInstallBlockedPackages = external.strictInstallBlockedPackages,
@@ -883,15 +1121,21 @@ class PolicyEngine private constructor(
             accessibilityComplianceState = external.accessibilityComplianceState,
             recoveryLockdownState = external.recoveryLockdownState
         )
-        return applier.verify(state, hostActivity)
     }
 
     fun diagnosticsSnapshot(): DiagnosticsSnapshot {
+        val now = clock.now()
         val desiredMode = store.getDesiredMode()
         val trackedPackages = sanitizeTrackedPackages()
-        val nowMs = clock.nowMs()
+        val nowMs = now.toInstant().toEpochMilli()
         val external = computeExternalState(nowMs)
         val enforcementState = currentEnforcementState()
+        val integrityFindings = runBlocking {
+            val loaded = loadPolicySnapshot(now)
+            val findings = runIntegrityAudit(loaded)
+            persistIntegrityFindings(findings)
+            findings
+        }
         val persistedScheduleTargetDiagnosticCode = runCatching {
             ScheduleTargetDiagnosticCode.valueOf(enforcementState.scheduleTargetDiagnosticCode)
         }.getOrDefault(ScheduleTargetDiagnosticCode.NONE)
@@ -925,12 +1169,29 @@ class PolicyEngine private constructor(
         val budgetBlockedPackages = EnforcementStateCodecs.decodeStringSet(enforcementState.budgetBlockedPackagesEncoded)
         val budgetBlockedGroupIds = EnforcementStateCodecs.decodeStringSet(enforcementState.budgetBlockedGroupIdsEncoded)
         val lastSuspendedPackages = EnforcementStateCodecs.decodeStringSet(enforcementState.lastSuspendedPackagesEncoded)
+        val strictInstallStagedPackages = EnforcementStateCodecs.decodeStringSet(
+            enforcementState.strictInstallSuspendedPackagesEncoded
+        )
+        val lastVerificationIssues = EnforcementStateCodecs.decodeStringSet(
+            enforcementState.lastVerificationIssuesEncoded
+        ).toList()
+        val applyAuditHistory = runBlocking {
+            db.applyAuditDao().getRecent(APPLY_AUDIT_RETENTION).map { it.toModel() }
+        }
         val persistedUsageSnapshotStatus = parseUsageSnapshotStatus(
             raw = enforcementState.budgetUsageSnapshotStatus,
             fallbackGranted = enforcementState.budgetUsageAccessGranted
         )
         val compliance = currentUsageAccessComplianceState(persistedUsageSnapshotStatus)
         val accessibilityCompliance = external.accessibilityComplianceState
+        val startupRecovery = enforcementState.takeIf { it.startupRecoveryAtMs > 0L }?.let {
+            StartupRecoverySnapshot(
+                atMs = it.startupRecoveryAtMs,
+                triggerSummary = it.startupRecoveryTriggerSummary,
+                status = it.startupRecoveryStatus,
+                detail = it.startupRecoveryDetail
+            )
+        }
         return DiagnosticsSnapshot(
             deviceOwner = isDeviceOwner(),
             desiredMode = desiredMode,
@@ -977,7 +1238,15 @@ class PolicyEngine private constructor(
             statusBarDisabledExpected = expected.statusBarDisabled,
             lastAppliedAtMs = enforcementState.lastAppliedAtMs,
             lastVerificationPassed = enforcementState.lastVerificationPassed,
+            lastVerificationIssues = lastVerificationIssues,
             lastError = enforcementState.lastError,
+            desiredBlockedPackages = expected.suspendTargets,
+            actualSuspendedPackages = lastSuspendedPackages,
+            strictInstallStagedPackages = strictInstallStagedPackages,
+            integrityFindings = integrityFindings,
+            lastIntegrityAuditAtMs = nowMs,
+            startupRecovery = startupRecovery,
+            applyAuditHistory = applyAuditHistory,
             hiddenSuspendPrototypeEnabled = store.isHiddenSuspendPrototypeEnabled(),
             packageSuspendBackend = store.getLastPackageSuspendBackend(),
             packageSuspendPrototypeError = store.getLastPackageSuspendPrototypeError(),
@@ -1206,7 +1475,7 @@ class PolicyEngine private constructor(
                 }
             )
             store.setCurrentLockReason(external.lockReason)
-            persistApplyBookkeeping(state, applyResult, verification, null)
+            persistApplyBookkeeping(state, applyResult, verification, null, triggerSummary = reason)
             FocusLog.i(FocusEventId.POLICY_APPLY_DONE, "Apply success mode=${state.mode}")
             return EngineResult(true, "Policy applied", verification, state, applyResult.repairPlan)
         }
@@ -1215,7 +1484,7 @@ class PolicyEngine private constructor(
             addAll(applyResult.errors)
             addAll(verification.issues)
         }.joinToString(" | ")
-        val bookkeeping = persistApplyBookkeeping(state, applyResult, verification, errorMessage)
+        val bookkeeping = persistApplyBookkeeping(state, applyResult, verification, errorMessage, triggerSummary = reason)
         FocusLog.w(FocusEventId.MODE_CHANGE_FAIL, "Apply failed mode=$targetMode error=$errorMessage")
 
         val rollbackState = evaluator.evaluate(
@@ -1246,7 +1515,13 @@ class PolicyEngine private constructor(
         }.joinToString(" | ")
         store.setDesiredMode(rollbackMode)
         store.setCurrentLockReason(rollbackLockReason)
-        persistApplyBookkeeping(rollbackState, rollbackApply, rollbackVerify, rollbackError)
+        persistApplyBookkeeping(
+            rollbackState,
+            rollbackApply,
+            rollbackVerify,
+            rollbackError,
+            triggerSummary = "rollback:$reason"
+        )
 
         return EngineResult(false, "Policy failed: $errorMessage", verification, state, applyResult.repairPlan)
     }
@@ -1458,24 +1733,12 @@ class PolicyEngine private constructor(
         val policyControls = loadPolicyControlsAsync()
         val installedTargetablePackages = resolver.getInstalledTargetablePackages()
         val hardProtectedPackages = resolver.getHardProtectedPackages()
-        val loaded = withContext(Dispatchers.IO) {
-            val budgetDao = db.budgetDao()
-            val scheduleDao = db.scheduleDao()
-            val scheduleSnapshot = scheduleDao.getEnabledScheduleSnapshot()
-            val scheduleTargets = splitScheduleTargetsByBlock(scheduleSnapshot.blockGroups)
-            LoadedPolicyRows(
-                groupLimits = budgetDao.getEnabledGroupLimits(),
-                groupEmergencyConfigs = budgetDao.getAllGroupEmergencyConfigs().associateBy { it.groupId },
-                appPolicies = budgetDao.getEnabledAppPolicies(),
-                mappings = budgetDao.getAllMappings(),
-                scheduleBlocks = scheduleSnapshot.blocks,
-                scheduleBlockTargets = scheduleTargets.allTargetsByBlockId,
-                scheduleGroupTargetsByBlock = scheduleTargets.groupTargetsByBlockId,
-                scheduleAppTargetsByBlock = scheduleTargets.appTargetsByBlockId,
-                emergencyStates = budgetClient.getActiveEmergencyStates(now)
-            )
-        }
-        val scheduleDecision = ScheduleEvaluator.evaluate(now, loaded.scheduleBlocks, loaded.scheduleBlockTargets)
+        val loaded = loadPolicySnapshot(now)
+        val scheduleDecision = ScheduleEvaluator.evaluate(
+            now,
+            loaded.scheduleBlocks,
+            loaded.scheduleGroupTargetsByBlock
+        )
         val activeBlockIds = scheduleDecision.activeBlockIds
         val activeScheduleTargets = resolveActiveScheduleTargets(
             activeBlockIds = activeBlockIds,
@@ -1630,25 +1893,25 @@ class PolicyEngine private constructor(
         )
     }
 
-    private suspend fun computeLiveScheduleTargetWarning(now: ZonedDateTime): String? {
+    private suspend fun loadPolicySnapshot(now: ZonedDateTime): LoadedPolicySnapshot {
         return withContext(Dispatchers.IO) {
             val budgetDao = db.budgetDao()
             val scheduleDao = db.scheduleDao()
             val scheduleSnapshot = scheduleDao.getEnabledScheduleSnapshot()
-            val scheduleTargets = splitScheduleTargetsByBlock(scheduleSnapshot.blockGroups)
-            val scheduleDecision = ScheduleEvaluator.evaluate(
-                now = now,
-                blocks = scheduleSnapshot.blocks,
-                blockGroups = scheduleTargets.allTargetsByBlockId
+            val scheduleTargets = splitScheduleTargetsByBlock(
+                blockGroups = scheduleSnapshot.blockGroups,
+                blockApps = scheduleSnapshot.blockApps
             )
-            resolveActiveScheduleTargets(
-                activeBlockIds = scheduleDecision.activeBlockIds,
+            LoadedPolicySnapshot(
+                groupLimits = budgetDao.getEnabledGroupLimits(),
+                groupEmergencyConfigs = budgetDao.getAllGroupEmergencyConfigs().associateBy { it.groupId },
+                appPolicies = budgetDao.getEnabledAppPolicies(),
+                mappings = budgetDao.getAllMappings(),
                 scheduleBlocks = scheduleSnapshot.blocks,
                 scheduleGroupTargetsByBlock = scheduleTargets.groupTargetsByBlockId,
                 scheduleAppTargetsByBlock = scheduleTargets.appTargetsByBlockId,
-                validGroupIds = budgetDao.getEnabledGroupLimits().mapTo(linkedSetOf(), GroupLimit::groupId),
-                isPackageInstalled = resolver::isPackageInstalled
-            ).warning
+                emergencyStates = budgetClient.getActiveEmergencyStates(now)
+            )
         }
     }
 
@@ -1821,24 +2084,22 @@ class PolicyEngine private constructor(
     }
 
     private fun splitScheduleTargetsByBlock(
-        blockGroups: List<ScheduleBlockGroup>
+        blockGroups: List<ScheduleBlockGroup>,
+        blockApps: List<ScheduleBlockApp>
     ): ScheduleTargetsByBlock {
-        val allTargets = linkedMapOf<Long, MutableSet<String>>()
         val groupTargets = linkedMapOf<Long, MutableSet<String>>()
         val appTargets = linkedMapOf<Long, MutableSet<String>>()
         blockGroups.forEach { row ->
             val targetId = row.groupId.trim()
             if (targetId.isBlank()) return@forEach
-            allTargets.getOrPut(row.blockId) { linkedSetOf() }.add(targetId)
-            val appPackage = decodeSingleAppScheduleTarget(targetId)
-            if (appPackage == null) {
-                groupTargets.getOrPut(row.blockId) { linkedSetOf() }.add(targetId)
-            } else {
-                appTargets.getOrPut(row.blockId) { linkedSetOf() }.add(appPackage)
-            }
+            groupTargets.getOrPut(row.blockId) { linkedSetOf() }.add(targetId)
+        }
+        blockApps.forEach { row ->
+            val packageName = row.packageName.trim()
+            if (packageName.isBlank()) return@forEach
+            appTargets.getOrPut(row.blockId) { linkedSetOf() }.add(packageName)
         }
         return ScheduleTargetsByBlock(
-            allTargetsByBlockId = allTargets.mapValues { it.value.toSet() },
             groupTargetsByBlockId = groupTargets.mapValues { it.value.toSet() },
             appTargetsByBlockId = appTargets.mapValues { it.value.toSet() }
         )
@@ -2153,20 +2414,18 @@ class PolicyEngine private constructor(
         val uninstallProtectedApps: Set<String>
     )
 
-    private data class LoadedPolicyRows(
+    private data class LoadedPolicySnapshot(
         val groupLimits: List<GroupLimit>,
         val groupEmergencyConfigs: Map<String, GroupEmergencyConfig>,
         val appPolicies: List<AppPolicy>,
         val mappings: List<AppGroupMap>,
         val scheduleBlocks: List<com.ankit.destination.data.ScheduleBlock>,
-        val scheduleBlockTargets: Map<Long, Set<String>>,
         val scheduleGroupTargetsByBlock: Map<Long, Set<String>>,
         val scheduleAppTargetsByBlock: Map<Long, Set<String>>,
         val emergencyStates: List<EmergencyState>
     )
 
     private data class ScheduleTargetsByBlock(
-        val allTargetsByBlockId: Map<Long, Set<String>>,
         val groupTargetsByBlockId: Map<Long, Set<String>>,
         val appTargetsByBlockId: Map<Long, Set<String>>
     )
@@ -2408,6 +2667,37 @@ class PolicyEngine private constructor(
         private val APPLY_LOCK = Any()
         private val APPLY_MUTEX = Mutex()
 
+        internal class EnforcementStateSnapshotCache(initialState: EnforcementStateEntity) {
+            @Volatile
+            private var currentState: EnforcementStateEntity = initialState
+
+            @Volatile
+            private var persistedStateLoaded: Boolean = false
+
+            private val lock = Any()
+
+            fun current(): EnforcementStateEntity = currentState
+
+            suspend fun loadFromPersistence(loader: suspend () -> EnforcementStateEntity): EnforcementStateEntity {
+                if (persistedStateLoaded) return currentState
+                val loadedState = loader()
+                synchronized(lock) {
+                    if (!persistedStateLoaded) {
+                        currentState = loadedState
+                        persistedStateLoaded = true
+                    }
+                    return currentState
+                }
+            }
+
+            fun persist(state: EnforcementStateEntity) {
+                synchronized(lock) {
+                    currentState = state
+                    persistedStateLoaded = true
+                }
+            }
+        }
+
 
         internal fun resolveEmergencyApps(
             storedEmergencyApps: Set<String>,
@@ -2575,6 +2865,8 @@ class PolicyEngine private constructor(
                 scheduleGroupTargetsByBlock[blockId].orEmpty().isNotEmpty() ||
                     scheduleAppTargetsByBlock[blockId].orEmpty().isNotEmpty()
             }
+            val hasConfiguredGroups = activeBlockIds.any { scheduleGroupTargetsByBlock[it].orEmpty().isNotEmpty() }
+            val hasConfiguredApps = activeBlockIds.any { scheduleAppTargetsByBlock[it].orEmpty().isNotEmpty() }
             val scheduledGroupIds = rawTargetedActiveBlockIds.flatMapTo(linkedSetOf()) { blockId ->
                 scheduleGroupTargetsByBlock[blockId].orEmpty().filterTo(linkedSetOf()) { groupId ->
                     validGroupIds.contains(groupId)
@@ -2585,6 +2877,8 @@ class PolicyEngine private constructor(
                     isInstalledCached(packageName)
                 }
             }
+            val hasEffectiveGroups = scheduledGroupIds.isNotEmpty()
+            val hasEffectiveApps = scheduledAppPackages.isNotEmpty()
             val targetedActiveBlockIds = rawTargetedActiveBlockIds.filterTo(linkedSetOf()) { blockId ->
                 scheduleGroupTargetsByBlock[blockId].orEmpty().any(validGroupIds::contains) ||
                     scheduleAppTargetsByBlock[blockId].orEmpty().any(::isInstalledCached)
@@ -2600,10 +2894,21 @@ class PolicyEngine private constructor(
                 val names = warningBlockIds.joinToString(", ") { blockId ->
                     blockNamesById[blockId]?.name ?: "block#$blockId"
                 }
-                if (rawTargetedActiveBlockIds.isEmpty()) {
-                    "Schedule window active but no targets are configured: $names"
-                } else {
-                    "Schedule window active but no effective installed or valid targets: $names"
+                when {
+                    rawTargetedActiveBlockIds.isEmpty() ->
+                        "Schedule window active but no targets are configured: $names"
+                    hasConfiguredGroups && hasConfiguredApps && !hasEffectiveGroups && !hasEffectiveApps ->
+                        "Schedule window active but group targets are invalid and app targets are not installed: $names"
+                    hasConfiguredGroups && !hasEffectiveGroups ->
+                        "Schedule window active but group targets are invalid: $names"
+                    hasConfiguredApps && !hasEffectiveApps ->
+                        "Schedule window active but app targets are not installed: $names"
+                    !hasConfiguredGroups ->
+                        "Schedule window active but group targets are missing: $names"
+                    !hasConfiguredApps ->
+                        "Schedule window active but app targets are missing: $names"
+                    else ->
+                        "Schedule window active but no effective installed or valid targets: $names"
                 }
             } else {
                 null
@@ -2611,7 +2916,17 @@ class PolicyEngine private constructor(
             val diagnosticCode = when {
                 warningBlockIds.isEmpty() -> ScheduleTargetDiagnosticCode.NONE
                 rawTargetedActiveBlockIds.isEmpty() -> ScheduleTargetDiagnosticCode.NO_CONFIGURED_TARGETS
-                else -> ScheduleTargetDiagnosticCode.NO_EFFECTIVE_TARGETS
+                hasConfiguredGroups && hasConfiguredApps && !hasEffectiveGroups && !hasEffectiveApps ->
+                    ScheduleTargetDiagnosticCode.NO_EFFECTIVE_GROUP_AND_APP_TARGETS
+                hasConfiguredGroups && !hasEffectiveGroups ->
+                    ScheduleTargetDiagnosticCode.NO_EFFECTIVE_GROUP_TARGETS
+                hasConfiguredApps && !hasEffectiveApps ->
+                    ScheduleTargetDiagnosticCode.NO_EFFECTIVE_APP_TARGETS
+                !hasConfiguredGroups ->
+                    ScheduleTargetDiagnosticCode.NO_CONFIGURED_GROUP_TARGETS
+                !hasConfiguredApps ->
+                    ScheduleTargetDiagnosticCode.NO_CONFIGURED_APP_TARGETS
+                else -> ScheduleTargetDiagnosticCode.NO_CONFIGURED_TARGETS
             }
             return ActiveScheduleTargets(
                 targetedActiveBlockIds = targetedActiveBlockIds,
@@ -2830,7 +3145,23 @@ class PolicyEngine private constructor(
         private const val WAKE_REASON_RELIABILITY_TICK = "reliability_tick"
         internal const val ACTIVE_ENFORCEMENT_REFRESH_MS = 5L * 60_000L
         private const val RELIABILITY_TICK_INTERVAL_MS = 15L * 60_000L
+        private const val APPLY_AUDIT_RETENTION = 50
     }
+}
+
+private fun ApplyAuditEntryEntity.toModel(): ApplyAuditEntry {
+    return ApplyAuditEntry(
+        atMs = atMs,
+        triggerSummary = triggerSummary,
+        desiredSuspendCount = desiredSuspendCount,
+        actualVerifiedSuspendCount = actualVerifiedSuspendCount,
+        verificationPassed = verificationPassed,
+        scheduleReason = scheduleReason,
+        budgetReason = budgetReason,
+        warning = warning,
+        repairTriggered = repairTriggered,
+        recoveryPass = recoveryPass
+    )
 }
 
 
