@@ -4,7 +4,7 @@ package com.ankit.destination.policy
  * Converts the internal block-reason sets into a single stable primary reason token per package.
  *
  * Contract (must remain stable):
- * - Global tokens: ALWAYS_BLOCKED, STRICT_INSTALL, USAGE_ACCESS_RECOVERY_LOCKDOWN, BUDGET
+ * - Global tokens: ALWAYS_BLOCKED, ACCESSIBILITY_RECOVERY_LOCKDOWN, USAGE_ACCESS_RECOVERY_LOCKDOWN, STRICT_INSTALL, BUDGET
  * - Scoped tokens: GROUP_<EffectiveBlockReason>, APP_<EffectiveBlockReason>
  *
  * This utility is intentionally tolerant of legacy/internal formats:
@@ -57,18 +57,21 @@ internal object BlockReasonUtils {
             EffectiveBlockReason.ALWAYS_BLOCKED.name ->
                 return Candidate(priority = 0, primaryToken = EffectiveBlockReason.ALWAYS_BLOCKED.name)
 
+            EffectiveBlockReason.ACCESSIBILITY_RECOVERY_LOCKDOWN.name ->
+                return Candidate(priority = 1, primaryToken = EffectiveBlockReason.ACCESSIBILITY_RECOVERY_LOCKDOWN.name)
+
             EffectiveBlockReason.USAGE_ACCESS_RECOVERY_LOCKDOWN.name ->
-                return Candidate(priority = 1, primaryToken = EffectiveBlockReason.USAGE_ACCESS_RECOVERY_LOCKDOWN.name)
+                return Candidate(priority = 2, primaryToken = EffectiveBlockReason.USAGE_ACCESS_RECOVERY_LOCKDOWN.name)
 
             EffectiveBlockReason.STRICT_INSTALL.name ->
-                return Candidate(priority = 2, primaryToken = EffectiveBlockReason.STRICT_INSTALL.name)
+                return Candidate(priority = 3, primaryToken = EffectiveBlockReason.STRICT_INSTALL.name)
 
             "BUDGET" ->
-                return Candidate(priority = 7, primaryToken = "BUDGET")
+                return Candidate(priority = 8, primaryToken = "BUDGET")
 
             // Legacy: schedule-as-global label.
             "SCHEDULE_GROUP" ->
-                return Candidate(priority = 3, primaryToken = "GROUP_${EffectiveBlockReason.SCHEDULED_BLOCK.name}")
+                return Candidate(priority = 4, primaryToken = "GROUP_${EffectiveBlockReason.SCHEDULED_BLOCK.name}")
         }
 
         // Legacy: some builds used APP:USAGE_BLOCK to represent budget.
@@ -142,12 +145,13 @@ internal object BlockReasonUtils {
     private fun priorityFor(reason: EffectiveBlockReason): Int {
         return when (reason) {
             EffectiveBlockReason.ALWAYS_BLOCKED -> 0
-            EffectiveBlockReason.USAGE_ACCESS_RECOVERY_LOCKDOWN -> 1
-            EffectiveBlockReason.STRICT_INSTALL -> 2
-            EffectiveBlockReason.SCHEDULED_BLOCK -> 3
-            EffectiveBlockReason.HOURLY_CAP -> 4
-            EffectiveBlockReason.DAILY_CAP -> 5
-            EffectiveBlockReason.OPENS_CAP -> 6
+            EffectiveBlockReason.ACCESSIBILITY_RECOVERY_LOCKDOWN -> 1
+            EffectiveBlockReason.USAGE_ACCESS_RECOVERY_LOCKDOWN -> 2
+            EffectiveBlockReason.STRICT_INSTALL -> 3
+            EffectiveBlockReason.SCHEDULED_BLOCK -> 4
+            EffectiveBlockReason.HOURLY_CAP -> 5
+            EffectiveBlockReason.DAILY_CAP -> 6
+            EffectiveBlockReason.OPENS_CAP -> 7
             EffectiveBlockReason.NONE -> 99
         }
     }

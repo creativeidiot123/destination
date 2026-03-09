@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ankit.destination.enforce.PolicyApplyOrchestrator
+import com.ankit.destination.policy.ApplyTrigger
+import com.ankit.destination.policy.ApplyTriggerCategory
 import com.ankit.destination.policy.PolicyEngine
 import com.ankit.destination.security.AppLockManager
 import com.ankit.destination.ui.AppOption
@@ -197,7 +199,11 @@ class AppRulesViewModel(
                     }
                     PolicyApplyOrchestrator.applyNow(
                         context = appContext,
-                        reason = "app_rules_add"
+                        trigger = ApplyTrigger(
+                            category = ApplyTriggerCategory.POLICY_MUTATION,
+                            source = "app_rules",
+                            detail = "add"
+                        )
                     )
                 }
             }
@@ -222,7 +228,11 @@ class AppRulesViewModel(
                     }
                     PolicyApplyOrchestrator.applyNow(
                         context = appContext,
-                        reason = "app_rules_remove"
+                        trigger = ApplyTrigger(
+                            category = ApplyTriggerCategory.POLICY_MUTATION,
+                            source = "app_rules",
+                            detail = "remove"
+                        )
                     )
                 }
             }

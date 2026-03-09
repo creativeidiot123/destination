@@ -3,9 +3,11 @@ package com.ankit.destination.ui.device
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.ankit.destination.enforce.PolicyApplyOrchestrator
 import com.ankit.destination.data.GlobalControls
 import com.ankit.destination.data.ManagedNetworkModeSetting
+import com.ankit.destination.enforce.PolicyApplyOrchestrator
+import com.ankit.destination.policy.ApplyTrigger
+import com.ankit.destination.policy.ApplyTriggerCategory
 import com.ankit.destination.policy.PolicyEngine
 import com.ankit.destination.security.AppLockManager
 import com.ankit.destination.ui.RefreshCoordinator
@@ -354,7 +356,11 @@ class DeviceControlsViewModel(
                     policyEngine.setGlobalControlsAsync(updated)
                     PolicyApplyOrchestrator.applyNow(
                         context = appContext,
-                        reason = "overview_controls"
+                        trigger = ApplyTrigger(
+                            category = ApplyTriggerCategory.POLICY_MUTATION,
+                            source = "device_controls",
+                            detail = "overview_controls"
+                        )
                     )
                 }
             }

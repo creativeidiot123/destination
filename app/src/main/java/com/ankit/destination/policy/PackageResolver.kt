@@ -24,8 +24,10 @@ internal interface PackageResolverClient : InstalledAppResolver, ProtectedPackag
     fun resolveRuntimeAllowlist(userChosenEmergencyApps: Set<String>): AllowlistResolution
 
     fun computeUsageAccessRecoverySuspendTargets(recoveryAllowlist: Set<String>): Set<String>
+    fun computeAccessibilityRecoverySuspendTargets(recoveryAllowlist: Set<String>): Set<String>
     fun filterSuspendable(packages: Set<String>, allowlist: Set<String>): Set<String>
     fun resolveUsageAccessRecoveryPackages(): PackageResolver.UsageAccessRecoveryResolution
+    fun resolveAccessibilityRecoveryPackages(): PackageResolver.AccessibilityRecoveryResolution
     fun isPackageInstalled(packageName: String): Boolean
     fun packageLabelOrPackage(packageName: String): String
 }
@@ -34,6 +36,13 @@ internal class PackageResolver(private val context: Context) : PackageResolverCl
     private val packageManager: PackageManager = context.packageManager
 
     data class UsageAccessRecoveryResolution(
+        val packages: Set<String>,
+        val settingsPackages: Set<String>,
+        val launcherPackages: Set<String>,
+        val warnings: List<String>
+    )
+
+    data class AccessibilityRecoveryResolution(
         val packages: Set<String>,
         val settingsPackages: Set<String>,
         val launcherPackages: Set<String>,
@@ -125,7 +134,16 @@ internal class PackageResolver(private val context: Context) : PackageResolverCl
     }
 
     override fun computeUsageAccessRecoverySuspendTargets(recoveryAllowlist: Set<String>): Set<String> {
-        return computeUsageAccessRecoverySuspendTargets(
+        return computeRecoverySuspendTargets(
+            launchablePackages = resolveLaunchablePackages(),
+            recoveryAllowlist = recoveryAllowlist,
+            controllerPackageName = context.packageName,
+            isNonSystemPackage = ::isNonSystemPackage
+        )
+    }
+
+    override fun computeAccessibilityRecoverySuspendTargets(recoveryAllowlist: Set<String>): Set<String> {
+        return computeRecoverySuspendTargets(
             launchablePackages = resolveLaunchablePackages(),
             recoveryAllowlist = recoveryAllowlist,
             controllerPackageName = context.packageName,
@@ -155,27 +173,54 @@ internal class PackageResolver(private val context: Context) : PackageResolverCl
     }
 
     override fun resolveUsageAccessRecoveryPackages(): UsageAccessRecoveryResolution {
-        val launcherPackages = resolveLauncherPackages()
-        val usageAccessSettingsPackages = resolveIntentPackages(
-            Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
+        val resolution = resolveRecoveryPackages(
+            primarySettingsIntent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS),
+            settingsLabel = "Usage Access"
         )
-        val settingsPackages = if (usageAccessSettingsPackages.isNotEmpty()) {
-            usageAccessSettingsPackages
+        return UsageAccessRecoveryResolution(
+            packages = resolution.packages,
+            settingsPackages = resolution.settingsPackages,
+            launcherPackages = resolution.launcherPackages,
+            warnings = resolution.warnings
+        )
+    }
+
+    override fun resolveAccessibilityRecoveryPackages(): AccessibilityRecoveryResolution {
+        val resolution = resolveRecoveryPackages(
+            primarySettingsIntent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS),
+            settingsLabel = "Accessibility"
+        )
+        return AccessibilityRecoveryResolution(
+            packages = resolution.packages,
+            settingsPackages = resolution.settingsPackages,
+            launcherPackages = resolution.launcherPackages,
+            warnings = resolution.warnings
+        )
+    }
+
+    private fun resolveRecoveryPackages(
+        primarySettingsIntent: Intent,
+        settingsLabel: String
+    ): RecoveryResolution {
+        val launcherPackages = resolveLauncherPackages()
+        val resolvedSettingsPackages = resolveIntentPackages(primarySettingsIntent)
+        val settingsPackages = if (resolvedSettingsPackages.isNotEmpty()) {
+            resolvedSettingsPackages
         } else {
             resolveFallbackSettingsPackages()
         }
         val warnings = buildList {
-            if (usageAccessSettingsPackages.isEmpty()) {
-                add("Usage Access Settings screen did not resolve; using generic Settings fallback")
+            if (resolvedSettingsPackages.isEmpty()) {
+                add("$settingsLabel Settings screen did not resolve; using generic Settings fallback")
             }
             if (settingsPackages.isEmpty()) {
-                add("No Settings package resolved for Usage Access recovery")
+                add("No Settings package resolved for $settingsLabel recovery")
             }
             if (launcherPackages.isEmpty()) {
-                add("No launcher package resolved for Usage Access recovery")
+                add("No launcher package resolved for $settingsLabel recovery")
             }
         }
-        return UsageAccessRecoveryResolution(
+        return RecoveryResolution(
             packages = linkedSetOf<String>().apply {
                 add(context.packageName)
                 addAll(settingsPackages)
@@ -322,6 +367,20 @@ internal class PackageResolver(private val context: Context) : PackageResolverCl
             controllerPackageName: String,
             isNonSystemPackage: (String) -> Boolean
         ): Set<String> {
+            return computeRecoverySuspendTargets(
+                launchablePackages = launchablePackages,
+                recoveryAllowlist = recoveryAllowlist,
+                controllerPackageName = controllerPackageName,
+                isNonSystemPackage = isNonSystemPackage
+            )
+        }
+
+        internal fun computeRecoverySuspendTargets(
+            launchablePackages: Set<String>,
+            recoveryAllowlist: Set<String>,
+            controllerPackageName: String,
+            isNonSystemPackage: (String) -> Boolean
+        ): Set<String> {
             return launchablePackages
                 .asSequence()
                 .map(String::trim)
@@ -341,4 +400,11 @@ internal class PackageResolver(private val context: Context) : PackageResolverCl
                 FocusConfig.protectedPackagePrefixes.any { prefix -> packageName.startsWith(prefix) }
         }
     }
+
+    private data class RecoveryResolution(
+        val packages: Set<String>,
+        val settingsPackages: Set<String>,
+        val launcherPackages: Set<String>,
+        val warnings: List<String>
+    )
 }

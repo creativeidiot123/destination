@@ -3,6 +3,9 @@ package com.ankit.destination.schedule
 import android.app.Activity
 import android.content.Context
 import com.ankit.destination.enforce.PolicyApplyOrchestrator
+import com.ankit.destination.policy.ApplyTrigger
+import com.ankit.destination.policy.ApplyTriggerBatch
+import com.ankit.destination.policy.ApplyTriggerCategory
 import com.ankit.destination.policy.EngineResult
 import com.ankit.destination.policy.FocusEventId
 import com.ankit.destination.policy.FocusLog
@@ -32,7 +35,13 @@ class ScheduleEnforcer(context: Context) {
         val startNs = System.nanoTime()
         val result = PolicyApplyOrchestrator.applyNowBlocking(
             context = appContext,
-            reason = trigger,
+            triggerBatch = ApplyTriggerBatch.single(
+                ApplyTrigger(
+                    category = ApplyTriggerCategory.SCHEDULE,
+                    source = "schedule_enforcer",
+                    detail = trigger
+                )
+            ),
             hostActivity = hostActivity
         )
         val applyMs = (System.nanoTime() - startNs) / 1_000_000.0
@@ -54,4 +63,3 @@ class ScheduleEnforcer(context: Context) {
         return active
     }
 }
-

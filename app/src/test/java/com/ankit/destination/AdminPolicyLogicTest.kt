@@ -2,14 +2,21 @@ package com.ankit.destination
 
 import com.ankit.destination.data.GlobalControls
 import com.ankit.destination.data.ManagedNetworkModeSetting
+import com.ankit.destination.policy.AccessibilityComplianceState
 import com.ankit.destination.policy.ModeState
 import com.ankit.destination.policy.ManagedNetworkPolicy
 import com.ankit.destination.policy.PackageResolver
+import com.ankit.destination.policy.PackageResolverClient
 import com.ankit.destination.policy.PolicyEngine
 import com.ankit.destination.policy.PolicyEvaluator
 import com.ankit.destination.policy.PolicyRestrictions
+import com.ankit.destination.policy.RecoveryLockdownState
 import com.ankit.destination.policy.PolicyState
 import com.ankit.destination.policy.PolicyStore
+import com.ankit.destination.policy.AllowlistResolution
+import com.ankit.destination.policy.EffectiveBlockReason
+import com.ankit.destination.policy.UsageAccessComplianceState
+import com.ankit.destination.policy.UsageSnapshotStatus
 import com.ankit.destination.usage.UsageAccessMonitor
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -290,6 +297,118 @@ class AdminPolicyLogicTest {
         )
 
         assertEquals(setOf("com.example.app"), targets)
+    }
+
+    @Test
+    fun accessibilityRecoveryLockdown_usesAccessibilityReasonTokenAndAllowlist() {
+        val resolver = object : PackageResolverClient {
+            override fun resolveRuntimeAllowlist(userChosenEmergencyApps: Set<String>): AllowlistResolution {
+                return AllowlistResolution(emptySet(), emptyMap())
+            }
+
+            override fun computeUsageAccessRecoverySuspendTargets(recoveryAllowlist: Set<String>): Set<String> {
+                return emptySet()
+            }
+
+            override fun computeAccessibilityRecoverySuspendTargets(recoveryAllowlist: Set<String>): Set<String> {
+                return setOf("com.example.blocked")
+            }
+
+            override fun filterSuspendable(packages: Set<String>, allowlist: Set<String>): Set<String> {
+                return packages - allowlist
+            }
+
+            override fun resolveUsageAccessRecoveryPackages(): PackageResolver.UsageAccessRecoveryResolution {
+                return PackageResolver.UsageAccessRecoveryResolution(emptySet(), emptySet(), emptySet(), emptyList())
+            }
+
+            override fun resolveAccessibilityRecoveryPackages(): PackageResolver.AccessibilityRecoveryResolution {
+                return PackageResolver.AccessibilityRecoveryResolution(emptySet(), emptySet(), emptySet(), emptyList())
+            }
+
+            override fun isPackageInstalled(packageName: String): Boolean = true
+
+            override fun packageLabelOrPackage(packageName: String): String = packageName
+
+            override fun getInstalledTargetablePackages(): Set<String> = setOf("com.example.blocked")
+
+            override fun getHardProtectedPackages(): Set<String> = setOf("com.ankit.destination")
+
+            override fun isHardProtectedPackage(packageName: String): Boolean {
+                return packageName == "com.ankit.destination"
+            }
+        }
+        val evaluator = PolicyEvaluator(resolver, "com.ankit.destination")
+
+        val state = evaluator.evaluate(
+            mode = ModeState.NORMAL,
+            emergencyApps = emptySet(),
+            protectionSnapshot = com.ankit.destination.policy.AppProtectionSnapshot(
+                allowlistedPackages = emptySet(),
+                hiddenPackages = emptySet(),
+                lockedHiddenPackages = emptySet(),
+                runtimeExemptPackages = emptySet(),
+                runtimeExemptionReasons = emptyMap(),
+                hardProtectedPackages = emptySet()
+            ),
+            alwaysBlockedApps = emptySet(),
+            uninstallProtectedApps = emptySet(),
+            globalControls = GlobalControls(),
+            previouslySuspended = emptySet(),
+            previouslyUninstallProtected = emptySet(),
+            budgetBlockedPackages = emptySet(),
+            primaryReasonByPackage = emptyMap(),
+            lockReason = "Accessibility missing: recovery lockdown active",
+            touchGrassBreakActive = false,
+            usageAccessComplianceState = UsageAccessComplianceState(
+                snapshotStatus = UsageSnapshotStatus.OK,
+                usageAccessGranted = true,
+                lockdownEligible = true,
+                lockdownActive = false,
+                recoveryAllowlist = emptySet(),
+                reason = null
+            ),
+            accessibilityComplianceState = AccessibilityComplianceState(
+                accessibilityServiceEnabled = false,
+                accessibilityServiceRunning = false,
+                lockdownEligible = true,
+                lockdownActive = true,
+                recoveryAllowlist = setOf(
+                    "com.ankit.destination",
+                    "com.example.settings",
+                    "com.example.launcher"
+                ),
+                reason = "Accessibility missing: recovery lockdown active"
+            ),
+            recoveryLockdownState = RecoveryLockdownState(
+                active = true,
+                allowlist = setOf(
+                    "com.ankit.destination",
+                    "com.example.settings",
+                    "com.example.launcher"
+                ),
+                allowlistReasons = mapOf(
+                    "com.ankit.destination" to "accessibility recovery",
+                    "com.example.settings" to "accessibility recovery",
+                    "com.example.launcher" to "accessibility recovery"
+                ),
+                reasonTokens = setOf(EffectiveBlockReason.ACCESSIBILITY_RECOVERY_LOCKDOWN.name),
+                reason = "Accessibility missing: recovery lockdown active"
+            )
+        )
+
+        assertEquals(
+            setOf("com.ankit.destination", "com.example.settings", "com.example.launcher"),
+            state.lockTaskAllowlist
+        )
+        assertEquals(
+            setOf(EffectiveBlockReason.ACCESSIBILITY_RECOVERY_LOCKDOWN.name),
+            state.blockReasonsByPackage["com.example.blocked"]
+        )
+        assertEquals(
+            EffectiveBlockReason.ACCESSIBILITY_RECOVERY_LOCKDOWN.name,
+            state.primaryReasonByPackage["com.example.blocked"]
+        )
     }
 
     @Test

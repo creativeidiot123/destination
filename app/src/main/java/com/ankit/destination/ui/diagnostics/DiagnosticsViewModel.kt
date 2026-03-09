@@ -5,6 +5,8 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ankit.destination.enforce.PolicyApplyOrchestrator
+import com.ankit.destination.policy.ApplyTrigger
+import com.ankit.destination.policy.ApplyTriggerCategory
 import com.ankit.destination.policy.DiagnosticsSnapshot
 import com.ankit.destination.policy.PolicyEngine
 import com.ankit.destination.security.AppLockManager
@@ -141,11 +143,11 @@ class DiagnosticsViewModel(
                     policyEngine.setHiddenSuspendPrototypeEnabled(enabled)
                     PolicyApplyOrchestrator.applyNow(
                         context = appContext,
-                        reason = if (enabled) {
-                            "diagnostics_hidden_suspend_enabled"
-                        } else {
-                            "diagnostics_hidden_suspend_disabled"
-                        }
+                        trigger = ApplyTrigger(
+                            category = ApplyTriggerCategory.DIAGNOSTICS,
+                            source = "diagnostics_hidden_suspend",
+                            detail = if (enabled) "enabled" else "disabled"
+                        )
                     )
                 }
             }
@@ -323,7 +325,11 @@ class DiagnosticsViewModel(
                     }
                     PolicyApplyOrchestrator.applyNow(
                         context = appContext,
-                        reason = "diagnostics_add_hidden"
+                        trigger = ApplyTrigger(
+                            category = ApplyTriggerCategory.DIAGNOSTICS,
+                            source = "diagnostics_hidden_apps",
+                            detail = "add"
+                        )
                     )
                 }
             }
@@ -363,7 +369,11 @@ class DiagnosticsViewModel(
                     check(removed) { "Hidden app is locked and cannot be removed." }
                     PolicyApplyOrchestrator.applyNow(
                         context = appContext,
-                        reason = "diagnostics_remove_hidden"
+                        trigger = ApplyTrigger(
+                            category = ApplyTriggerCategory.DIAGNOSTICS,
+                            source = "diagnostics_hidden_apps",
+                            detail = "remove"
+                        )
                     )
                 }
             }
@@ -488,7 +498,10 @@ class DiagnosticsViewModel(
                     runCatchingNonCancellation {
                         PolicyApplyOrchestrator.applyNow(
                             context = appContext,
-                            reason = "diagnostics_import_backup"
+                            trigger = ApplyTrigger(
+                                category = ApplyTriggerCategory.DIAGNOSTICS,
+                                source = "diagnostics_import_backup"
+                            )
                         )
                     }
                 }

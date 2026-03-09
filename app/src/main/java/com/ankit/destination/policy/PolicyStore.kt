@@ -240,6 +240,52 @@ class PolicyStore(context: Context) {
             .apply()
     }
 
+    fun captureComputedPolicySnapshot(): ComputedPolicySnapshot {
+        return ComputedPolicySnapshot(
+            scheduleLockComputed = isScheduleLockComputed(),
+            scheduleLockEnforced = isScheduleLockEnforced(),
+            scheduleStrictComputed = isScheduleStrictComputed(),
+            scheduleStrictEnforced = isScheduleStrictEnforced(),
+            scheduleBlockedGroups = getScheduleBlockedGroups(),
+            scheduleBlockedPackages = getScheduleBlockedPackages(),
+            strictInstallSuspendedPackages = getStrictInstallSuspendedPackages(),
+            scheduleLockReason = getScheduleLockReason(),
+            scheduleNextTransitionAtMs = getScheduleNextTransitionAtMs(),
+            budgetBlockedPackages = getBudgetBlockedPackages(),
+            budgetBlockedGroupIds = getBudgetBlockedGroupIds(),
+            budgetReason = getBudgetReason(),
+            budgetUsageAccessGranted = isBudgetUsageAccessGranted(),
+            budgetNextCheckAtMs = getBudgetNextCheckAtMs(),
+            nextPolicyWakeAtMs = getNextPolicyWakeAtMs(),
+            nextPolicyWakeReason = getNextPolicyWakeReason(),
+            primaryReasonByPackage = getPrimaryReasonByPackage(),
+            blockReasonsByPackage = getBlockReasonsByPackage()
+        )
+    }
+
+    fun restoreComputedPolicySnapshot(snapshot: ComputedPolicySnapshot) {
+        prefs.edit()
+            .putBoolean(KEY_SCHEDULE_LOCK_COMPUTED, snapshot.scheduleLockComputed)
+            .putBoolean(KEY_SCHEDULE_LOCK_ENFORCED, snapshot.scheduleLockEnforced)
+            .putBoolean(KEY_SCHEDULE_STRICT_COMPUTED, snapshot.scheduleStrictComputed)
+            .putBoolean(KEY_SCHEDULE_STRICT_ENFORCED, snapshot.scheduleStrictEnforced)
+            .putStringSet(KEY_SCHEDULE_BLOCKED_GROUPS, snapshot.scheduleBlockedGroups)
+            .putStringSet(KEY_SCHEDULE_BLOCKED_PACKAGES, snapshot.scheduleBlockedPackages)
+            .putStringSet(KEY_STRICT_INSTALL_SUSPENDED, snapshot.strictInstallSuspendedPackages)
+            .putString(KEY_SCHEDULE_LOCK_REASON, snapshot.scheduleLockReason)
+            .putLong(KEY_SCHEDULE_NEXT_TRANSITION_AT, snapshot.scheduleNextTransitionAtMs ?: -1L)
+            .putStringSet(KEY_BUDGET_BLOCKED, snapshot.budgetBlockedPackages)
+            .putStringSet(KEY_BUDGET_BLOCKED_GROUPS, snapshot.budgetBlockedGroupIds)
+            .putString(KEY_BUDGET_REASON, snapshot.budgetReason)
+            .putBoolean(KEY_BUDGET_USAGE_ACCESS_GRANTED, snapshot.budgetUsageAccessGranted)
+            .putLong(KEY_BUDGET_NEXT_CHECK_AT, snapshot.budgetNextCheckAtMs ?: -1L)
+            .putLong(KEY_NEXT_POLICY_WAKE_AT, snapshot.nextPolicyWakeAtMs ?: -1L)
+            .putString(KEY_NEXT_POLICY_WAKE_REASON, snapshot.nextPolicyWakeReason)
+            .putString(KEY_PRIMARY_REASON_BY_PACKAGE, encodeMap(snapshot.primaryReasonByPackage))
+            .putString(KEY_BLOCK_REASONS_BY_PACKAGE, encodeReasonSetMap(snapshot.blockReasonsByPackage))
+            .apply()
+    }
+
     fun getTouchGrassBreakUntilMs(): Long? {
         val value = prefs.getLong(KEY_TOUCH_GRASS_BREAK_UNTIL_MS, -1L)
         return if (value > 0L) value else null
@@ -344,19 +390,27 @@ class PolicyStore(context: Context) {
         errorMessage: String?,
         controllerPackageName: String
     ) {
-        val actualSuspended = reconcileTrackedPackages(
-            previousPackages = state.previouslySuspended,
-            targetPackages = state.suspendTargets,
-            failedAdds = applyResult.failedToSuspend,
-            failedRemovals = applyResult.failedToUnsuspend
-        )
+        val actualSuspended = if (applyResult.observedState.suspensionAuthoritative) {
+            applyResult.observedState.suspendedPackages
+        } else {
+            reconcileTrackedPackages(
+                previousPackages = state.previouslySuspended,
+                targetPackages = state.suspendTargets,
+                failedAdds = applyResult.failedToSuspend,
+                failedRemovals = applyResult.failedToUnsuspend
+            )
+        }
         val desiredUninstallProtected = desiredUninstallProtectedPackages(state, controllerPackageName)
-        val actualUninstallProtected = reconcileTrackedPackages(
-            previousPackages = state.previouslyUninstallProtectedPackages,
-            targetPackages = desiredUninstallProtected,
-            failedAdds = applyResult.failedToProtectUninstall,
-            failedRemovals = applyResult.failedToUnprotectUninstall
-        )
+        val actualUninstallProtected = if (applyResult.observedState.uninstallProtectionAuthoritative) {
+            applyResult.observedState.uninstallProtectedPackages
+        } else {
+            reconcileTrackedPackages(
+                previousPackages = state.previouslyUninstallProtectedPackages,
+                targetPackages = desiredUninstallProtected,
+                failedAdds = applyResult.failedToProtectUninstall,
+                failedRemovals = applyResult.failedToUnprotectUninstall
+            )
+        }
         prefs.edit()
             .putLong(KEY_LAST_APPLIED_AT, System.currentTimeMillis())
             .putBoolean(KEY_LAST_VERIFY_PASSED, verification.passed)
@@ -682,3 +736,24 @@ class PolicyStore(context: Context) {
         }
     }
 }
+
+data class ComputedPolicySnapshot(
+    val scheduleLockComputed: Boolean,
+    val scheduleLockEnforced: Boolean,
+    val scheduleStrictComputed: Boolean,
+    val scheduleStrictEnforced: Boolean,
+    val scheduleBlockedGroups: Set<String>,
+    val scheduleBlockedPackages: Set<String>,
+    val strictInstallSuspendedPackages: Set<String>,
+    val scheduleLockReason: String?,
+    val scheduleNextTransitionAtMs: Long?,
+    val budgetBlockedPackages: Set<String>,
+    val budgetBlockedGroupIds: Set<String>,
+    val budgetReason: String?,
+    val budgetUsageAccessGranted: Boolean,
+    val budgetNextCheckAtMs: Long?,
+    val nextPolicyWakeAtMs: Long?,
+    val nextPolicyWakeReason: String?,
+    val primaryReasonByPackage: Map<String, String>,
+    val blockReasonsByPackage: Map<String, Set<String>>
+)

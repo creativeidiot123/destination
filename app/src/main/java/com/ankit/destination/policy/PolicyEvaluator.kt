@@ -21,7 +21,9 @@ internal class PolicyEvaluator(
         primaryReasonByPackage: Map<String, String>,
         lockReason: String?,
         touchGrassBreakActive: Boolean,
-        usageAccessComplianceState: UsageAccessComplianceState
+        usageAccessComplianceState: UsageAccessComplianceState,
+        accessibilityComplianceState: AccessibilityComplianceState,
+        recoveryLockdownState: RecoveryLockdownState
     ): PolicyState {
         FocusLog.d(FocusEventId.POLICY_STATE_COMPUTED, "PolicyEvaluator.evaluate() start")
         FocusLog.d(
@@ -36,17 +38,26 @@ internal class PolicyEvaluator(
             FocusEventId.USAGE_ACCESS_CHECK,
             "usageAccess granted=${usageAccessComplianceState.usageAccessGranted} lockdownEligible=${usageAccessComplianceState.lockdownEligible} lockdownActive=${usageAccessComplianceState.lockdownActive}"
         )
+        FocusLog.d(
+            FocusEventId.ACCESSIBILITY_STATUS,
+            "accessibility enabled=${accessibilityComplianceState.accessibilityServiceEnabled} running=${accessibilityComplianceState.accessibilityServiceRunning} lockdownEligible=${accessibilityComplianceState.lockdownEligible} lockdownActive=${accessibilityComplianceState.lockdownActive}"
+        )
 
         val effectiveMode = mode
-        if (usageAccessComplianceState.lockdownActive) {
-            val recoveryAllowlist = usageAccessComplianceState.recoveryAllowlist
-            val recoverySuspendTargets =
-                packageResolver.computeUsageAccessRecoverySuspendTargets(recoveryAllowlist)
-            val recoveryReasons = recoverySuspendTargets.associateWith {
-                EffectiveBlockReason.USAGE_ACCESS_RECOVERY_LOCKDOWN.name
+        if (recoveryLockdownState.active) {
+            val recoveryAllowlist = recoveryLockdownState.allowlist
+            val recoverySuspendTargets = linkedSetOf<String>().apply {
+                if (usageAccessComplianceState.lockdownActive) {
+                    addAll(packageResolver.computeUsageAccessRecoverySuspendTargets(recoveryAllowlist))
+                }
+                if (accessibilityComplianceState.lockdownActive) {
+                    addAll(packageResolver.computeAccessibilityRecoverySuspendTargets(recoveryAllowlist))
+                }
             }
-            val recoveryReasonsByPackage = recoveryReasons.mapValues { setOf(it.value) }
-            val allowlistReasons = recoveryAllowlist.associateWith { "usage access recovery" }
+            val recoveryReasonsByPackage = recoverySuspendTargets.associateWith {
+                recoveryLockdownState.reasonTokens
+            }
+            val recoveryReasons = BlockReasonUtils.derivePrimaryByPackage(recoveryReasonsByPackage)
             val managedNetworkPolicy = globalControls.toManagedNetworkPolicy(controllerPackageName)
             val restrictions = PolicyRestrictions.build(
                 globalControls = globalControls,
@@ -71,10 +82,10 @@ internal class PolicyEvaluator(
                 blockSelfUninstall = true,
                 requireAutoTime = globalControls.lockTime,
                 emergencyApps = emptySet(),
-                allowlistReasons = allowlistReasons,
+                allowlistReasons = recoveryLockdownState.allowlistReasons,
                 vpnRequired = false,
                 managedNetworkPolicy = managedNetworkPolicy,
-                lockReason = usageAccessComplianceState.reason,
+                lockReason = recoveryLockdownState.reason,
                 budgetBlockedPackages = emptySet(),
                 touchGrassBreakActive = false,
                 primaryReasonByPackage = recoveryReasons,

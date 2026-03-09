@@ -7,6 +7,7 @@ import com.ankit.destination.policy.EmergencyConfigInput
 import com.ankit.destination.policy.GroupPolicyInput
 import com.ankit.destination.policy.PolicyEngine
 import com.ankit.destination.policy.AppPolicyInput
+import com.ankit.destination.policy.ScheduleTargetDiagnosticCode
 import com.ankit.destination.policy.UsageInputs
 import com.ankit.destination.schedule.ScheduleDecision
 import org.junit.Assert.assertEquals
@@ -102,46 +103,16 @@ class PolicyEngineLogicTest {
 
     @Test
     fun resolveStrictScheduleActive_usesActiveStrictScheduleBlock_evenWithoutStrictGroupFlag() {
-        val strictActive = PolicyEngine.resolveStrictScheduleActive(
-            scheduleStrictActive = true,
-            groupInputs = listOf(
-                GroupPolicyInput(
-                    groupId = "study",
-                    priorityIndex = 0,
-                    strictEnabled = false,
-                    dailyLimitMs = 0L,
-                    hourlyLimitMs = 0L,
-                    opensPerDay = 0,
-                    members = setOf("app.one"),
-                    emergencyConfig = EmergencyConfigInput(false, 0, 0),
-                    scheduleBlocked = true
-                )
-            )
-        )
+        val strictActive = PolicyEngine.resolveStrictScheduleActive(scheduleStrictActive = true)
 
         assertTrue(strictActive)
     }
 
     @Test
-    fun resolveStrictScheduleActive_preservesExistingStrictGroupFallback() {
-        val strictActive = PolicyEngine.resolveStrictScheduleActive(
-            scheduleStrictActive = false,
-            groupInputs = listOf(
-                GroupPolicyInput(
-                    groupId = "study",
-                    priorityIndex = 0,
-                    strictEnabled = true,
-                    dailyLimitMs = 0L,
-                    hourlyLimitMs = 0L,
-                    opensPerDay = 0,
-                    members = setOf("app.one"),
-                    emergencyConfig = EmergencyConfigInput(false, 0, 0),
-                    scheduleBlocked = true
-                )
-            )
-        )
+    fun resolveStrictScheduleActive_doesNotBlendGroupStrictInstallParticipation() {
+        val strictActive = PolicyEngine.resolveStrictScheduleActive(scheduleStrictActive = false)
 
-        assertTrue(strictActive)
+        assertFalse(strictActive)
     }
 
     @Test
@@ -372,6 +343,7 @@ class PolicyEngineLogicTest {
         assertTrue(targets.targetedActiveBlockIds.isEmpty())
         assertTrue(targets.scheduledGroupIds.isEmpty())
         assertTrue(targets.scheduledAppPackages.isEmpty())
+        assertEquals(ScheduleTargetDiagnosticCode.NO_EFFECTIVE_TARGETS, targets.diagnosticCode)
         assertEquals(
             "Schedule window active but no effective installed or valid targets: Strict social",
             targets.warning
@@ -402,6 +374,7 @@ class PolicyEngineLogicTest {
         assertTrue(targets.targetedActiveBlockIds.isEmpty())
         assertTrue(targets.scheduledGroupIds.isEmpty())
         assertTrue(targets.scheduledAppPackages.isEmpty())
+        assertEquals(ScheduleTargetDiagnosticCode.NO_CONFIGURED_TARGETS, targets.diagnosticCode)
         assertEquals(
             "Schedule window active but no targets are configured: Strict social",
             targets.warning
@@ -439,10 +412,10 @@ class PolicyEngineLogicTest {
                 GroupPolicyInput(
                     groupId = "g1",
                     priorityIndex = 0,
-                    strictEnabled = false,
+                    strictInstallParticipates = false,
                     dailyLimitMs = 60_000L,
-                    hourlyLimitMs = 0L,
-                    opensPerDay = 0,
+                    hourlyLimitMs = null,
+                    opensPerDay = null,
                     members = setOf("allow.app", "hidden.app"),
                     emergencyConfig = EmergencyConfigInput(false, 0, 0),
                     scheduleBlocked = false
@@ -452,8 +425,8 @@ class PolicyEngineLogicTest {
                 AppPolicyInput(
                     packageName = "allow.app",
                     dailyLimitMs = 60_000L,
-                    hourlyLimitMs = 0L,
-                    opensPerDay = 0,
+                    hourlyLimitMs = null,
+                    opensPerDay = null,
                     emergencyConfig = EmergencyConfigInput(false, 0, 0),
                     scheduleBlocked = false
                 )

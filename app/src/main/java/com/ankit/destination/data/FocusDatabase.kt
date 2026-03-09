@@ -22,14 +22,16 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         AlwaysAllowedApp::class,
         AlwaysBlockedApp::class,
         UninstallProtectedApp::class,
-        HiddenApp::class
+        HiddenApp::class,
+        EnforcementStateEntity::class
     ],
-    version = 14,
+    version = 16,
     exportSchema = false
 )
 abstract class FocusDatabase : RoomDatabase() {
     abstract fun scheduleDao(): ScheduleDao
     abstract fun budgetDao(): BudgetDao
+    abstract fun enforcementStateDao(): EnforcementStateDao
 
     companion object {
         @Volatile
@@ -60,7 +62,9 @@ abstract class FocusDatabase : RoomDatabase() {
                 MIGRATION_10_11,
                 MIGRATION_11_12,
                 MIGRATION_12_13,
-                MIGRATION_13_14
+                MIGRATION_13_14,
+                MIGRATION_14_15,
+                MIGRATION_15_16
             )
                 .build()
         }
@@ -445,6 +449,67 @@ abstract class FocusDatabase : RoomDatabase() {
                         `locked` INTEGER NOT NULL DEFAULT 0,
                         PRIMARY KEY(`packageName`)
                     )
+                    """.trimIndent()
+                )
+            }
+        }
+
+        private val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `enforcement_state` (
+                        `id` INTEGER NOT NULL,
+                        `scheduleLockComputed` INTEGER NOT NULL,
+                        `scheduleLockEnforced` INTEGER NOT NULL,
+                        `scheduleStrictComputed` INTEGER NOT NULL,
+                        `scheduleStrictEnforced` INTEGER NOT NULL,
+                        `scheduleBlockedGroupsEncoded` TEXT NOT NULL,
+                        `scheduleBlockedPackagesEncoded` TEXT NOT NULL,
+                        `strictInstallSuspendedPackagesEncoded` TEXT NOT NULL,
+                        `scheduleLockReason` TEXT,
+                        `scheduleTargetWarning` TEXT,
+                        `scheduleTargetDiagnosticCode` TEXT NOT NULL,
+                        `scheduleNextTransitionAtMs` INTEGER,
+                        `budgetBlockedPackagesEncoded` TEXT NOT NULL,
+                        `budgetBlockedGroupIdsEncoded` TEXT NOT NULL,
+                        `budgetReason` TEXT,
+                        `budgetUsageAccessGranted` INTEGER NOT NULL,
+                        `budgetNextCheckAtMs` INTEGER,
+                        `nextPolicyWakeAtMs` INTEGER,
+                        `nextPolicyWakeReason` TEXT,
+                        `primaryReasonByPackageEncoded` TEXT NOT NULL,
+                        `blockReasonsByPackageEncoded` TEXT NOT NULL,
+                        `lastSuspendedPackagesEncoded` TEXT NOT NULL,
+                        `lastUninstallProtectedPackagesEncoded` TEXT NOT NULL,
+                        `lastAppliedAtMs` INTEGER NOT NULL,
+                        `lastVerificationPassed` INTEGER NOT NULL,
+                        `lastError` TEXT,
+                        `lastSuccessfulApplyAtMs` INTEGER NOT NULL,
+                        `computedSnapshotVersion` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
+        private val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    ALTER TABLE `enforcement_state`
+                    ADD COLUMN `budgetUsageSnapshotStatus` TEXT NOT NULL DEFAULT 'ACCESS_MISSING'
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    UPDATE `enforcement_state`
+                    SET `budgetUsageSnapshotStatus` =
+                        CASE
+                            WHEN `budgetUsageAccessGranted` = 1 THEN 'OK'
+                            ELSE 'ACCESS_MISSING'
+                        END
                     """.trimIndent()
                 )
             }

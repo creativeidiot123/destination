@@ -4,13 +4,15 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ankit.destination.budgets.BudgetOrchestrator
-import com.ankit.destination.enforce.PolicyApplyOrchestrator
 import com.ankit.destination.budgets.clampEmergencyMinutesPerUnlock
 import com.ankit.destination.budgets.clampEmergencyUnlocksPerDay
 import com.ankit.destination.data.EmergencyStateMerger
 import com.ankit.destination.data.EmergencyTargetType
 import com.ankit.destination.data.FocusDatabase
 import com.ankit.destination.data.GroupLimit
+import com.ankit.destination.enforce.PolicyApplyOrchestrator
+import com.ankit.destination.policy.ApplyTrigger
+import com.ankit.destination.policy.ApplyTriggerCategory
 import com.ankit.destination.policy.PolicyEngine
 import com.ankit.destination.security.AppLockManager
 import com.ankit.destination.ui.RefreshCoordinator
@@ -240,7 +242,11 @@ class GroupListViewModel(
                         if (unlockResult.success) {
                             PolicyApplyOrchestrator.applyNow(
                                 context = appContext,
-                                reason = "group_emergency_activate:$normalizedGroupId"
+                                trigger = ApplyTrigger(
+                                    category = ApplyTriggerCategory.MANUAL,
+                                    source = "group_emergency_activate",
+                                    detail = normalizedGroupId
+                                )
                             )
                         }
                     }

@@ -4,7 +4,6 @@ import android.content.Context
 import androidx.room.withTransaction
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.ankit.destination.enforce.PolicyApplyOrchestrator
 import com.ankit.destination.budgets.clampEmergencyMinutesPerUnlock
 import com.ankit.destination.budgets.clampEmergencyUnlocksPerDay
 import com.ankit.destination.data.FocusDatabase
@@ -13,6 +12,9 @@ import com.ankit.destination.data.GroupLimit
 import com.ankit.destination.data.ScheduleBlock
 import com.ankit.destination.data.ScheduleBlockKind
 import com.ankit.destination.data.ScheduleTimezoneMode
+import com.ankit.destination.enforce.PolicyApplyOrchestrator
+import com.ankit.destination.policy.ApplyTrigger
+import com.ankit.destination.policy.ApplyTriggerCategory
 import com.ankit.destination.policy.PolicyEngine
 import com.ankit.destination.security.AppLockManager
 import com.ankit.destination.ui.AppOption
@@ -448,7 +450,11 @@ class GroupDetailViewModel(
                     }
                     PolicyApplyOrchestrator.applyNow(
                         context = appContext,
-                        reason = "group_detail_save:$finalGroupId"
+                        trigger = ApplyTrigger(
+                            category = ApplyTriggerCategory.POLICY_MUTATION,
+                            source = "group_detail_save",
+                            detail = finalGroupId
+                        )
                     )
                 }
             }
@@ -494,7 +500,11 @@ class GroupDetailViewModel(
                     }
                     PolicyApplyOrchestrator.applyNow(
                         context = appContext,
-                        reason = "group_detail_delete:$groupId"
+                        trigger = ApplyTrigger(
+                            category = ApplyTriggerCategory.POLICY_MUTATION,
+                            source = "group_detail_delete",
+                            detail = groupId
+                        )
                     )
                 }
             }

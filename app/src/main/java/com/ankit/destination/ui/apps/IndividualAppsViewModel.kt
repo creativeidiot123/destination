@@ -301,6 +301,8 @@ private fun blockMessageFor(rawReason: String?, blocked: Boolean, budgetBlocked:
     return when {
         normalized == EffectiveBlockReason.ALWAYS_BLOCKED.name -> "Always blocked"
         normalized == EffectiveBlockReason.STRICT_INSTALL.name -> "Blocked during strict schedule"
+        normalized == EffectiveBlockReason.ACCESSIBILITY_RECOVERY_LOCKDOWN.name ->
+            "Blocked - Accessibility recovery required"
         normalized == EffectiveBlockReason.USAGE_ACCESS_RECOVERY_LOCKDOWN.name ->
             "Blocked - Usage Access recovery required"
         normalized.isBlank() && budgetBlocked -> "Usage limit reached"

@@ -5,7 +5,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ankit.destination.enforce.AccessibilityStatusMonitor
 import com.ankit.destination.enforce.PolicyApplyOrchestrator
+import com.ankit.destination.policy.ApplyTrigger
+import com.ankit.destination.policy.ApplyTriggerCategory
 import com.ankit.destination.policy.PolicyEngine
+import com.ankit.destination.policy.UsageSnapshotStatus
 import com.ankit.destination.security.AppLockManager
 import com.ankit.destination.ui.RefreshCoordinator
 import com.ankit.destination.ui.UiInvalidationBus
@@ -40,6 +43,7 @@ data class DashboardUiState(
     val accessibilityServiceRunning: Boolean = false,
     val accessibilityDegradedReason: String? = null,
     val nextPolicyWake: String? = null,
+    val usageSnapshotStatus: UsageSnapshotStatus = UsageSnapshotStatus.ACCESS_MISSING,
     val usageAccessGranted: Boolean = false,
     val usageAccessRecoveryLockdownActive: Boolean = false,
     val usageAccessRecoveryReason: String? = null,
@@ -134,6 +138,7 @@ class DashboardViewModel(
                                     val reason = snapshot.nextPolicyWakeReason ?: "policy wake"
                                     "$reason at $formatted"
                                 },
+                                usageSnapshotStatus = snapshot.usageSnapshotStatus,
                                 usageAccessGranted = snapshot.usageAccessGranted,
                                 usageAccessRecoveryLockdownActive = snapshot.usageAccessRecoveryLockdownActive,
                                 usageAccessRecoveryReason = snapshot.usageAccessRecoveryReason,
@@ -181,7 +186,10 @@ class DashboardViewModel(
                     )
                     PolicyApplyOrchestrator.applyNow(
                         context = appContext,
-                        reason = "ui_reapply"
+                        trigger = ApplyTrigger(
+                            category = ApplyTriggerCategory.MANUAL,
+                            source = "dashboard_apply_now"
+                        )
                     )
                 }
             }

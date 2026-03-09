@@ -47,6 +47,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ankit.destination.policy.PolicyEngine
+import com.ankit.destination.policy.UsageSnapshotStatus
 import com.ankit.destination.security.AppLockManager
 import com.ankit.destination.ui.UiInvalidationBus
 import com.ankit.destination.ui.components.AdminSessionBanner
@@ -97,11 +98,11 @@ fun DashboardScreen(
                         style = MaterialTheme.typography.displaySmall,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onBackground,
-                        modifier = Modifier.padding(horizontal = 16.dp, top = 24.dp)
+                        modifier = Modifier.padding(start = 16.dp, top = 24.dp, end = 16.dp)
                     )
                 }
 
-                if (uiState.isDeviceOwner && !uiState.usageAccessGranted) {
+                if (uiState.isDeviceOwner && uiState.usageSnapshotStatus == UsageSnapshotStatus.ACCESS_MISSING) {
                     item(contentType = "warning_banner") {
                         StatusBanner(
                             title = "Usage Access Required",
@@ -121,6 +122,20 @@ fun DashboardScreen(
                                     Intent(context, com.ankit.destination.ui.UsageAccessGuideActivity::class.java)
                                 )
                             }
+                        )
+                    }
+                }
+
+                if (uiState.isDeviceOwner && uiState.usageSnapshotStatus == UsageSnapshotStatus.INGESTION_FAILED) {
+                    item(contentType = "warning_banner") {
+                        StatusBanner(
+                            title = "Usage Data Stale",
+                            message = uiState.usageAccessRecoveryReason
+                                ?: "Destination could not refresh usage data. Last known usage remains in effect until the next successful refresh.",
+                            icon = Icons.Default.Warning,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp)
                         )
                     }
                 }
@@ -279,7 +294,7 @@ fun DashboardScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(56.dp)
-                            .padding(horizontal = 16.dp, top = 8.dp),
+                            .padding(start = 16.dp, top = 8.dp, end = 16.dp),
                         shape = MaterialTheme.shapes.extraLarge,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.primary,

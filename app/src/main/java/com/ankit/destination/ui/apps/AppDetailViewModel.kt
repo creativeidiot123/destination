@@ -4,11 +4,13 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ankit.destination.budgets.BudgetOrchestrator
-import com.ankit.destination.enforce.PolicyApplyOrchestrator
 import com.ankit.destination.budgets.clampEmergencyMinutesPerUnlock
 import com.ankit.destination.budgets.clampEmergencyUnlocksPerDay
 import com.ankit.destination.data.AppPolicy
 import com.ankit.destination.data.FocusDatabase
+import com.ankit.destination.enforce.PolicyApplyOrchestrator
+import com.ankit.destination.policy.ApplyTrigger
+import com.ankit.destination.policy.ApplyTriggerCategory
 import com.ankit.destination.policy.PolicyEngine
 import com.ankit.destination.security.AppLockManager
 import com.ankit.destination.ui.UiInvalidationBus
@@ -230,7 +232,11 @@ class AppDetailViewModel(
                     )
                     PolicyApplyOrchestrator.applyNow(
                         context = appContext,
-                        reason = "app_detail_save:$packageName"
+                        trigger = ApplyTrigger(
+                            category = ApplyTriggerCategory.POLICY_MUTATION,
+                            source = "app_detail_save",
+                            detail = packageName
+                        )
                     )
                 }
             }

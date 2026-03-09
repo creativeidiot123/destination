@@ -13,6 +13,7 @@ import com.ankit.destination.policy.PolicyApplier
 import com.ankit.destination.policy.PolicyState
 import com.ankit.destination.policy.ProtectedPackagesProvider
 import com.ankit.destination.policy.desiredUserControlDisabledPackages
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -132,6 +133,42 @@ class PolicyApplierLogicTest {
     }
 
     @Test
+    fun apply_usesObservedSuspendedState_notTrackedState_forSuspendDelta() {
+        val facade = FakeDevicePolicyClient().apply {
+            seedSuspended("a")
+        }
+        val applier = PolicyApplier(facade)
+
+        val result = applier.apply(
+            state = policyState(
+                suspendTargets = setOf("a"),
+                previouslySuspended = emptySet()
+            )
+        )
+
+        assertTrue(result.errors.isEmpty())
+        assertTrue(facade.suspendCalls.isEmpty())
+        assertEquals(setOf("a"), result.observedState.suspendedPackages)
+    }
+
+    @Test
+    fun apply_usesObservedSuspendedState_notTrackedState_forUnsuspendDelta() {
+        val facade = FakeDevicePolicyClient()
+        val applier = PolicyApplier(facade)
+
+        val result = applier.apply(
+            state = policyState(
+                suspendTargets = emptySet(),
+                previouslySuspended = setOf("a")
+            )
+        )
+
+        assertTrue(result.errors.isEmpty())
+        assertTrue(facade.suspendCalls.isEmpty())
+        assertTrue(result.observedState.suspendedPackages.isEmpty())
+    }
+
+    @Test
     fun apply_turnsOffAdbWhenDeveloperRestrictionIsEnabled() {
         val facade = FakeDevicePolicyClient()
         val applier = PolicyApplier(facade)
@@ -146,6 +183,45 @@ class PolicyApplierLogicTest {
 
         assertTrue(result.errors.isEmpty())
         assertEquals("0", facade.globalSettings[Settings.Global.ADB_ENABLED])
+    }
+
+    @Test
+    fun apply_coreVerificationFailure_requestsRepair() {
+        val facade = FakeDevicePolicyClient().apply {
+            reportedSuspendedOverrides["a"] = false
+        }
+        val applier = PolicyApplier(facade)
+
+        val result = applier.apply(
+            state = policyState(
+                suspendTargets = setOf("a"),
+                previouslySuspended = emptySet()
+            )
+        )
+
+        assertTrue(result.coreFailure)
+        assertTrue(result.repairPlan?.required == true)
+        assertEquals(60_000L, result.repairPlan?.delayMs)
+        assertFalse(result.verification?.passed ?: true)
+    }
+
+    @Test
+    fun apply_supportingFailure_isReportedWithoutPretendingSuccess() {
+        val facade = FakeDevicePolicyClient().apply {
+            ignoreAutoTimeWrites = true
+        }
+        val applier = PolicyApplier(facade)
+
+        val result = applier.apply(
+            state = policyState(
+                suspendTargets = emptySet(),
+                previouslySuspended = emptySet()
+            ).copy(requireAutoTime = true)
+        )
+
+        assertTrue(result.supportingFailure)
+        assertTrue(result.repairPlan?.required == true)
+        assertTrue(result.verification?.supportingIssues?.contains("Auto time requirement mismatch") == true)
     }
 
     private fun policyState(
@@ -197,6 +273,12 @@ class PolicyApplierLogicTest {
         private var lockTaskPackages = emptyList<String>()
         private var lockTaskFeatures = 0
         var deviceOwnerLockScreenInfo: CharSequence? = null
+        var ignoreAutoTimeWrites: Boolean = false
+        val reportedSuspendedOverrides = linkedMapOf<String, Boolean?>()
+
+        fun seedSuspended(packageName: String) {
+            suspendedPackages += packageName
+        }
 
         override fun isAdminActive(): Boolean = true
         override fun isDeviceOwner(): Boolean = true
@@ -255,11 +337,15 @@ class PolicyApplierLogicTest {
             globalSettings[setting] = value
         }
         override fun setAutoTimeRequired(required: Boolean) {
-            autoTimeRequired = required
+            if (!ignoreAutoTimeWrites) {
+                autoTimeRequired = required
+            }
         }
         override fun isAutoTimeRequired(): Boolean = autoTimeRequired
         override fun canVerifyPackageSuspension(): Boolean = true
-        override fun isPackageSuspended(packageName: String): Boolean? = suspendedPackages.contains(packageName)
+        override fun isPackageSuspended(packageName: String): Boolean? {
+            return reportedSuspendedOverrides[packageName] ?: suspendedPackages.contains(packageName)
+        }
         override fun lockTaskModeState(): Int? = 0
         override fun isHomeAppPinnedToSelf(): Boolean? = false
         override fun setAsHomeForKiosk(enabled: Boolean) = Unit

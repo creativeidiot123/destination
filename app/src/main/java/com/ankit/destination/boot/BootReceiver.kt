@@ -8,6 +8,8 @@ import android.content.Intent
 import com.ankit.destination.enforce.AccessibilityStatusMonitor
 import com.ankit.destination.enforce.PolicyApplyOrchestrator
 import com.ankit.destination.packages.PackageChangeReceiver
+import com.ankit.destination.policy.ApplyTrigger
+import com.ankit.destination.policy.ApplyTriggerCategory
 import com.ankit.destination.policy.FocusEventId
 import com.ankit.destination.policy.FocusLog
 import com.ankit.destination.policy.PolicyEngine
@@ -42,7 +44,11 @@ class BootReceiver : BroadcastReceiver() {
             requestEnqueued = true
             PolicyApplyOrchestrator.requestApply(
                 context = context,
-                reason = "BootReceiver:$action"
+                trigger = ApplyTrigger(
+                    category = ApplyTriggerCategory.BOOT,
+                    source = "boot_receiver",
+                    detail = action
+                )
             ) { result ->
                 FocusLog.d(FocusEventId.BOOT_REAPPLY, "apply: success=${result.success}")
                 if (result.success) {

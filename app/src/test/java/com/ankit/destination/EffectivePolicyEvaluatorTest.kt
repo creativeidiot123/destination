@@ -28,7 +28,7 @@ class EffectivePolicyEvaluatorTest {
                 groupPolicy(
                     groupId = "study",
                     members = setOf("a"),
-                    strictEnabled = true,
+                    strictInstallParticipates = true,
                     dailyLimitMs = 1L,
                     hourlyLimitMs = 1L,
                     opensPerDay = 1,
@@ -50,7 +50,7 @@ class EffectivePolicyEvaluatorTest {
                 groupPolicy(
                     groupId = "study",
                     members = setOf("a", "b"),
-                    strictEnabled = true,
+                    strictInstallParticipates = true,
                     dailyLimitMs = 60_000L,
                     hourlyLimitMs = 60_000L,
                     opensPerDay = 1,
@@ -159,7 +159,7 @@ class EffectivePolicyEvaluatorTest {
                 groupPolicy(
                     groupId = "strict-all",
                     members = setOf("manual.member"),
-                    strictEnabled = true,
+                    strictInstallParticipates = true,
                     targetMode = GroupTargetMode.ALL_APPS,
                     scheduleBlocked = true
                 )
@@ -176,7 +176,7 @@ class EffectivePolicyEvaluatorTest {
     }
 
     @Test
-    fun allAppsSchedule_doesNotRemoveBudgetReasonsForExplicitMembers() {
+    fun allAppsSchedule_appliesBudgetReasonsToResolvedAllAppsTargets() {
         val result = evaluate(
             usageInputs = UsageInputs(
                 usedTodayMs = mapOf("budget.app" to 120_000L),
@@ -187,7 +187,7 @@ class EffectivePolicyEvaluatorTest {
                 groupPolicy(
                     groupId = "strict-all",
                     members = setOf("budget.app"),
-                    strictEnabled = true,
+                    strictInstallParticipates = true,
                     targetMode = GroupTargetMode.ALL_APPS,
                     dailyLimitMs = 60_000L
                 )
@@ -195,9 +195,10 @@ class EffectivePolicyEvaluatorTest {
             installedTargetablePackages = setOf("budget.app", "other.app")
         )
 
-        assertEquals(setOf("budget.app"), result.usageBlockedPackages)
-        assertEquals(setOf("budget.app"), result.effectiveBlockedPackages)
+        assertEquals(setOf("budget.app", "other.app"), result.usageBlockedPackages)
+        assertEquals(setOf("budget.app", "other.app"), result.effectiveBlockedPackages)
         assertEquals("GROUP_DAILY_CAP", result.primaryReasonByPackage["budget.app"])
+        assertEquals("GROUP_DAILY_CAP", result.primaryReasonByPackage["other.app"])
     }
 
     @Test
@@ -212,7 +213,7 @@ class EffectivePolicyEvaluatorTest {
                 groupPolicy(
                     groupId = "strict-all",
                     members = emptySet(),
-                    strictEnabled = true,
+                    strictInstallParticipates = true,
                     targetMode = GroupTargetMode.ALL_APPS,
                     scheduleBlocked = true
                 )
@@ -264,7 +265,7 @@ class EffectivePolicyEvaluatorTest {
     private fun groupPolicy(
         groupId: String,
         members: Set<String>,
-        strictEnabled: Boolean = false,
+        strictInstallParticipates: Boolean = false,
         targetMode: GroupTargetMode = GroupTargetMode.SELECTED_APPS,
         dailyLimitMs: Long = 0L,
         hourlyLimitMs: Long = 0L,
@@ -276,11 +277,11 @@ class EffectivePolicyEvaluatorTest {
     ) = GroupPolicyInput(
         groupId = groupId,
         priorityIndex = 0,
-        strictEnabled = strictEnabled,
+        strictInstallParticipates = strictInstallParticipates,
         targetMode = targetMode,
-        dailyLimitMs = dailyLimitMs,
-        hourlyLimitMs = hourlyLimitMs,
-        opensPerDay = opensPerDay,
+        dailyLimitMs = dailyLimitMs.takeIf { it > 0L },
+        hourlyLimitMs = hourlyLimitMs.takeIf { it > 0L },
+        opensPerDay = opensPerDay.takeIf { it > 0 },
         members = members,
         emergencyConfig = EmergencyConfigInput(
             enabled = emergencyEnabled,
@@ -298,9 +299,9 @@ class EffectivePolicyEvaluatorTest {
         scheduleBlocked: Boolean = false
     ) = AppPolicyInput(
         packageName = packageName,
-        dailyLimitMs = dailyLimitMs,
-        hourlyLimitMs = hourlyLimitMs,
-        opensPerDay = opensPerDay,
+        dailyLimitMs = dailyLimitMs.takeIf { it > 0L },
+        hourlyLimitMs = hourlyLimitMs.takeIf { it > 0L },
+        opensPerDay = opensPerDay.takeIf { it > 0 },
         emergencyConfig = EmergencyConfigInput(false, 0, 0),
         scheduleBlocked = scheduleBlocked
     )

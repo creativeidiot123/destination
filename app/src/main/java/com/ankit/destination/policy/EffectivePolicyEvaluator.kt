@@ -11,7 +11,8 @@ enum class EffectiveBlockReason {
     OPENS_CAP,
     STRICT_INSTALL,
     ALWAYS_BLOCKED,
-    USAGE_ACCESS_RECOVERY_LOCKDOWN
+    USAGE_ACCESS_RECOVERY_LOCKDOWN,
+    ACCESSIBILITY_RECOVERY_LOCKDOWN
 }
 
 data class EmergencyConfigInput(
@@ -36,11 +37,11 @@ data class UsageInputs(
 data class GroupPolicyInput(
     val groupId: String,
     val priorityIndex: Int,
-    val strictEnabled: Boolean,
+    val strictInstallParticipates: Boolean,
     val targetMode: GroupTargetMode = GroupTargetMode.SELECTED_APPS,
-    val dailyLimitMs: Long,
-    val hourlyLimitMs: Long,
-    val opensPerDay: Int,
+    val dailyLimitMs: Long?,
+    val hourlyLimitMs: Long?,
+    val opensPerDay: Int?,
     val members: Set<String>,
     val emergencyConfig: EmergencyConfigInput,
     val scheduleBlocked: Boolean
@@ -48,9 +49,9 @@ data class GroupPolicyInput(
 
 data class AppPolicyInput(
     val packageName: String,
-    val dailyLimitMs: Long,
-    val hourlyLimitMs: Long,
-    val opensPerDay: Int,
+    val dailyLimitMs: Long?,
+    val hourlyLimitMs: Long?,
+    val opensPerDay: Int?,
     val emergencyConfig: EmergencyConfigInput,
     val scheduleBlocked: Boolean
 )
@@ -59,7 +60,9 @@ data class GroupPolicyEvaluation(
     val groupId: String,
     val priorityIndex: Int,
     val members: Set<String>,
+    val resolvedUsageTargets: Set<String>,
     val scheduleTargets: Set<String>,
+    val strictInstallTargets: Set<String>,
     val scheduleReasonToken: String,
     val baselineReason: EffectiveBlockReason,
     val baselineBlocked: Boolean,
@@ -126,31 +129,28 @@ object EffectivePolicyEvaluator {
         val groupEvaluations = sortedGroups.mapNotNull { group ->
             val cleanGroupId = group.groupId.trim()
             if (cleanGroupId.isBlank()) return@mapNotNull null
-            val members = group.members
-                .asSequence()
-                .map(String::trim)
-                .filter(String::isNotBlank)
-                .filterNot(fullyExemptPackages::contains)
-                .toSet()
-            val scheduleTargets = when (group.targetMode) {
-                GroupTargetMode.SELECTED_APPS -> members
-                GroupTargetMode.ALL_APPS -> installedTargetablePackages -
-                    allAppsExcludedPackages -
-                    hardProtectedPackages
-            }
-            if (members.isEmpty() && (!group.scheduleBlocked || scheduleTargets.isEmpty())) {
-                FocusLog.v(FocusEventId.GROUP_EVAL, "â”‚ group=$cleanGroupId SKIPPED (no eligible members or schedule targets)")
+            val members = normalizeConfiguredMembers(group.members)
+            val resolvedTargets = resolveGroupTargets(
+                members = members,
+                targetMode = group.targetMode,
+                fullyExemptPackages = fullyExemptPackages,
+                allAppsExcludedPackages = allAppsExcludedPackages,
+                installedTargetablePackages = installedTargetablePackages,
+                hardProtectedPackages = hardProtectedPackages
+            )
+            if (resolvedTargets.resolvedUsageTargets.isEmpty() && resolvedTargets.resolvedScheduleTargets.isEmpty()) {
+                FocusLog.v(FocusEventId.GROUP_EVAL, "â”‚ group=$cleanGroupId SKIPPED (no resolved usage or schedule targets)")
                 return@mapNotNull null
             }
 
-            val usedHour = members.sumOf { usageInputs.usedHourMs[it] ?: 0L }
-            val usedDay = members.sumOf { usageInputs.usedTodayMs[it] ?: 0L }
-            val opens = members.sumOf { usageInputs.opensToday[it] ?: 0 }
+            val usedHour = resolvedTargets.resolvedUsageTargets.sumOf { usageInputs.usedHourMs[it] ?: 0L }
+            val usedDay = resolvedTargets.resolvedUsageTargets.sumOf { usageInputs.usedTodayMs[it] ?: 0L }
+            val opens = resolvedTargets.resolvedUsageTargets.sumOf { usageInputs.opensToday[it] ?: 0 }
             val baselineReason = when {
                 group.scheduleBlocked -> EffectiveBlockReason.SCHEDULED_BLOCK
-                group.hourlyLimitMs > 0L && usedHour >= group.hourlyLimitMs -> EffectiveBlockReason.HOURLY_CAP
-                group.dailyLimitMs > 0L && usedDay >= group.dailyLimitMs -> EffectiveBlockReason.DAILY_CAP
-                group.opensPerDay > 0 && opens >= group.opensPerDay -> EffectiveBlockReason.OPENS_CAP
+                group.hourlyLimitMs != null && usedHour >= group.hourlyLimitMs -> EffectiveBlockReason.HOURLY_CAP
+                group.dailyLimitMs != null && usedDay >= group.dailyLimitMs -> EffectiveBlockReason.DAILY_CAP
+                group.opensPerDay != null && opens >= group.opensPerDay -> EffectiveBlockReason.OPENS_CAP
                 else -> EffectiveBlockReason.NONE
             }
             val baselineBlocked = baselineReason != EffectiveBlockReason.NONE
@@ -160,28 +160,31 @@ object EffectivePolicyEvaluator {
 
             val usedDayMin = usedDay / 60_000L
             val usedHourMin = usedHour / 60_000L
-            val dailyLimitMin = if (group.dailyLimitMs > 0L) group.dailyLimitMs / 60_000L else -1L
-            val hourlyLimitMin = if (group.hourlyLimitMs > 0L) group.hourlyLimitMs / 60_000L else -1L
-            FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ â”Œâ”€ GROUP: $cleanGroupId (priority=${group.priorityIndex}) members=${members.size} strict=${group.strictEnabled} schedBlocked=${group.scheduleBlocked}")
+            val dailyLimitLabel = group.dailyLimitMs?.let { "${it / 60_000L}min" } ?: "disabled"
+            val hourlyLimitLabel = group.hourlyLimitMs?.let { "${it / 60_000L}min" } ?: "disabled"
+            val opensLimitLabel = group.opensPerDay?.toString() ?: "disabled"
+            FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ â”Œâ”€ GROUP: $cleanGroupId (priority=${group.priorityIndex}) members=${members.size} strictInstallParticipates=${group.strictInstallParticipates} schedBlocked=${group.scheduleBlocked}")
             if (group.scheduleBlocked) {
-                FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ â”‚ scheduleTargetMode=${group.targetMode} scheduleTargets=${scheduleTargets.size}")
+                FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ â”‚ scheduleTargetMode=${group.targetMode} scheduleTargets=${resolvedTargets.resolvedScheduleTargets.size}")
             }
-            FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ â”‚ usage: dayUsed=${usedDayMin}min/${dailyLimitMin}min hourUsed=${usedHourMin}min/${hourlyLimitMin}min opens=$opens/${group.opensPerDay}")
+            FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ â”‚ usage: dayUsed=${usedDayMin}min/$dailyLimitLabel hourUsed=${usedHourMin}min/$hourlyLimitLabel opens=$opens/$opensLimitLabel")
             FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ â”‚ baseline=${baselineReason.name} blocked=$baselineBlocked")
             FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ â”‚ emergency: enabled=${group.emergencyConfig.enabled} active=$emergencyActive remainingUnlocks=$remainingUnlocks untilMs=${state?.activeUntilEpochMs}")
             val effectiveBlocked = baselineBlocked &&
                 !emergencyActive &&
                 when (baselineReason) {
-                    EffectiveBlockReason.SCHEDULED_BLOCK -> scheduleTargets.isNotEmpty()
-                    else -> members.isNotEmpty()
+                    EffectiveBlockReason.SCHEDULED_BLOCK -> resolvedTargets.resolvedScheduleTargets.isNotEmpty()
+                    else -> resolvedTargets.resolvedUsageTargets.isNotEmpty()
                 }
-            FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ â””â”€ EFFECTIVE: ${if (effectiveBlocked) "ðŸ”´ BLOCKED" else "ðŸŸ¢ ALLOWED"} scheduleTargets=${scheduleTargets.size} members=${members.size}")
+            FocusLog.d(FocusEventId.GROUP_EVAL, "â”‚ â””â”€ EFFECTIVE: ${if (effectiveBlocked) "ðŸ”´ BLOCKED" else "ðŸŸ¢ ALLOWED"} scheduleTargets=${resolvedTargets.resolvedScheduleTargets.size} usageTargets=${resolvedTargets.resolvedUsageTargets.size}")
 
             GroupPolicyEvaluation(
                 groupId = cleanGroupId,
                 priorityIndex = group.priorityIndex,
                 members = members,
-                scheduleTargets = scheduleTargets,
+                resolvedUsageTargets = resolvedTargets.resolvedUsageTargets,
+                scheduleTargets = resolvedTargets.resolvedScheduleTargets,
+                strictInstallTargets = resolvedTargets.strictInstallTargets,
                 scheduleReasonToken = if (group.targetMode == GroupTargetMode.ALL_APPS) {
                     "GROUP:${cleanGroupId}:SCHEDULED_BLOCK_ALL_APPS"
                 } else {
@@ -189,7 +192,7 @@ object EffectivePolicyEvaluator {
                 },
                 baselineReason = baselineReason,
                 baselineBlocked = baselineBlocked,
-                strictInstallActive = group.scheduleBlocked && group.strictEnabled,
+                strictInstallActive = group.scheduleBlocked && group.strictInstallParticipates,
                 emergencyAvailable = baselineBlocked && group.emergencyConfig.enabled && remainingUnlocks > 0 && !emergencyActive,
                 emergencyRemainingUnlocks = remainingUnlocks,
                 emergencyActiveUntilEpochMs = state?.activeUntilEpochMs,
@@ -210,11 +213,11 @@ object EffectivePolicyEvaluator {
             val opensCount = usageInputs.opensToday[packageName] ?: 0
             val baselineReason = when {
                 policy.scheduleBlocked -> EffectiveBlockReason.SCHEDULED_BLOCK
-                policy.hourlyLimitMs > 0L && usedHourMs >= policy.hourlyLimitMs ->
+                policy.hourlyLimitMs != null && usedHourMs >= policy.hourlyLimitMs ->
                     EffectiveBlockReason.HOURLY_CAP
-                policy.dailyLimitMs > 0L && usedDayMs >= policy.dailyLimitMs ->
+                policy.dailyLimitMs != null && usedDayMs >= policy.dailyLimitMs ->
                     EffectiveBlockReason.DAILY_CAP
-                policy.opensPerDay > 0 && opensCount >= policy.opensPerDay ->
+                policy.opensPerDay != null && opensCount >= policy.opensPerDay ->
                     EffectiveBlockReason.OPENS_CAP
                 else -> EffectiveBlockReason.NONE
             }
@@ -225,10 +228,11 @@ object EffectivePolicyEvaluator {
 
             val usedDayMin = usedDayMs / 60_000L
             val usedHourMin = usedHourMs / 60_000L
-            val dailyLimitMin = if (policy.dailyLimitMs > 0L) policy.dailyLimitMs / 60_000L else -1L
-            val hourlyLimitMin = if (policy.hourlyLimitMs > 0L) policy.hourlyLimitMs / 60_000L else -1L
+            val dailyLimitLabel = policy.dailyLimitMs?.let { "${it / 60_000L}min" } ?: "disabled"
+            val hourlyLimitLabel = policy.hourlyLimitMs?.let { "${it / 60_000L}min" } ?: "disabled"
+            val opensLimitLabel = policy.opensPerDay?.toString() ?: "disabled"
             FocusLog.d(FocusEventId.APP_EVAL, "â”‚ â”Œâ”€ APP: $packageName schedBlocked=${policy.scheduleBlocked}")
-            FocusLog.d(FocusEventId.APP_EVAL, "â”‚ â”‚ usage: dayUsed=${usedDayMin}min/${dailyLimitMin}min hourUsed=${usedHourMin}min/${hourlyLimitMin}min opens=$opensCount/${policy.opensPerDay}")
+            FocusLog.d(FocusEventId.APP_EVAL, "â”‚ â”‚ usage: dayUsed=${usedDayMin}min/$dailyLimitLabel hourUsed=${usedHourMin}min/$hourlyLimitLabel opens=$opensCount/$opensLimitLabel")
             FocusLog.d(FocusEventId.APP_EVAL, "â”‚ â”‚ baseline=${baselineReason.name} blocked=$baselineBlocked")
             FocusLog.d(FocusEventId.APP_EVAL, "â”‚ â”‚ emergency: enabled=${policy.emergencyConfig.enabled} active=$emergencyActive remainingUnlocks=$remainingUnlocks")
             val effectiveBlocked = baselineBlocked && !emergencyActive
@@ -268,12 +272,12 @@ object EffectivePolicyEvaluator {
                 EffectiveBlockReason.SCHEDULED_BLOCK -> scheduledBlocked += evaluation.scheduleTargets
                 EffectiveBlockReason.HOURLY_CAP,
                 EffectiveBlockReason.DAILY_CAP,
-                EffectiveBlockReason.OPENS_CAP -> usageBlocked += evaluation.members
+                EffectiveBlockReason.OPENS_CAP -> usageBlocked += evaluation.resolvedUsageTargets
                 else -> Unit
             }
             val reasonTargets = when (evaluation.baselineReason) {
                 EffectiveBlockReason.SCHEDULED_BLOCK -> evaluation.scheduleTargets
-                else -> evaluation.members
+                else -> evaluation.resolvedUsageTargets
             }
             reasonTargets.forEach { pkg ->
                 addReason(
@@ -342,6 +346,48 @@ object EffectivePolicyEvaluator {
             blockReasonsByPackage = blockReasons.mapValues { (_, value) -> value.toSet() },
             primaryReasonByPackage = BlockReasonUtils.derivePrimaryByPackage(blockReasons),
             usageReasonSummary = reasonSummary
+        )
+    }
+
+    data class ResolvedGroupTargets(
+        val resolvedUsageTargets: Set<String>,
+        val resolvedScheduleTargets: Set<String>,
+        val strictInstallTargets: Set<String>
+    )
+
+    internal fun normalizeConfiguredMembers(members: Set<String>): Set<String> {
+        return members.asSequence()
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .toCollection(linkedSetOf())
+    }
+
+    internal fun resolveGroupTargets(
+        members: Set<String>,
+        targetMode: GroupTargetMode,
+        fullyExemptPackages: Set<String>,
+        allAppsExcludedPackages: Set<String>,
+        installedTargetablePackages: Set<String>,
+        hardProtectedPackages: Set<String>
+    ): ResolvedGroupTargets {
+        val selectedTargets = members
+            .asSequence()
+            .filterNot(fullyExemptPackages::contains)
+            .toCollection(linkedSetOf())
+        val allAppsTargets = installedTargetablePackages
+            .asSequence()
+            .filterNot(hardProtectedPackages::contains)
+            .filterNot(fullyExemptPackages::contains)
+            .filterNot(allAppsExcludedPackages::contains)
+            .toCollection(linkedSetOf())
+        val resolvedTargets = when (targetMode) {
+            GroupTargetMode.SELECTED_APPS -> selectedTargets
+            GroupTargetMode.ALL_APPS -> allAppsTargets
+        }
+        return ResolvedGroupTargets(
+            resolvedUsageTargets = resolvedTargets,
+            resolvedScheduleTargets = resolvedTargets,
+            strictInstallTargets = resolvedTargets
         )
     }
 }

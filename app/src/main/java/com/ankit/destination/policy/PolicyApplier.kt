@@ -16,198 +16,226 @@ internal class PolicyApplier(
 ) {
 
     fun apply(state: PolicyState, hostActivity: Activity? = null): ApplyResult {
-        FocusLog.d(FocusEventId.POLICY_APPLY_START, "┌── PolicyApplier.apply() START ──")
-        FocusLog.d(FocusEventId.POLICY_APPLY_START, "│ mode=${state.mode} suspendTargets=${state.suspendTargets.size} prevSuspended=${state.previouslySuspended.size}")
-        FocusLog.d(FocusEventId.POLICY_APPLY_START, "│ restrictions=${state.restrictions.size} uninstallProtected=${state.uninstallProtectedPackages.size} lockTaskAllowlist=${state.lockTaskAllowlist.size}")
-        FocusLog.d(FocusEventId.POLICY_APPLY_START, "│ statusBarDisabled=${state.statusBarDisabled} requireAutoTime=${state.requireAutoTime} blockSelfUninstall=${state.blockSelfUninstall}")
-        FocusLog.d(FocusEventId.POLICY_APPLY_START, "│ managedNetworkPolicy=${state.managedNetworkPolicy} vpnRequired=${state.vpnRequired}")
+        val desired = prepare(state)
+        val phaseResults = mutableListOf<PolicyApplyPhaseResult>()
         val errors = mutableListOf<String>()
 
         if (!facade.isDeviceOwner()) {
-            FocusLog.e(FocusEventId.POLICY_APPLY_START, "│ ❌ NOT device owner — aborting apply")
-            errors += "Not device owner"
+            val deviceOwnerError = "Not device owner"
+            phaseResults += PolicyApplyPhaseResult(
+                phase = PolicyApplyPhase.PREPARE,
+                category = PolicyEnforcementCategory.CORE,
+                successful = false,
+                errors = listOf(deviceOwnerError)
+            )
+            val verification = PolicyVerificationResult(
+                passed = false,
+                issues = listOf(deviceOwnerError),
+                suspendedChecked = 0,
+                suspendedMismatchCount = 0,
+                lockTaskModeActive = null,
+                coreIssues = listOf(deviceOwnerError)
+            )
             return ApplyResult(
                 failedToSuspend = emptySet(),
                 failedToUnsuspend = emptySet(),
                 failedToProtectUninstall = emptySet(),
                 failedToUnprotectUninstall = emptySet(),
-                errors = errors
+                errors = listOf(deviceOwnerError),
+                phaseResults = phaseResults,
+                repairPlan = repairIfNeeded(verification),
+                verification = verification,
+                coreFailure = true
             )
         }
 
-        if (hostActivity != null) {
-            val lockTaskState = facade.lockTaskModeState() ?: ActivityManager.LOCK_TASK_MODE_NONE
-            if (lockTaskState != ActivityManager.LOCK_TASK_MODE_NONE) {
-                FocusLog.d(FocusEventId.LOCK_CALC, "│ Exiting lock task (was mode=$lockTaskState)")
-                runOnMainThreadBlocking(hostActivity) { hostActivity.stopLockTask() }
-                    ?.let { errors += "stopLockTask failed: ${it.message}" }
-            }
-        }
+        val current = readAuthoritativeState(desired, state)
+        val delta = computeDelta(current, desired, state)
+        phaseResults += PolicyApplyPhaseResult(
+            phase = PolicyApplyPhase.PREPARE,
+            category = PolicyEnforcementCategory.CORE,
+            successful = true,
+            errors = emptyList()
+        )
 
-        val desiredUninstallProtected = buildSet {
-            if (state.blockSelfUninstall) add(facade.packageName)
-            addAll(state.uninstallProtectedPackages)
-        }
-        val previouslyUninstallProtected = state.previouslyUninstallProtectedPackages
-        val toProtect = desiredUninstallProtected - previouslyUninstallProtected
-        val toUnprotect = previouslyUninstallProtected - desiredUninstallProtected
+        val reversibleErrors = mutableListOf<String>()
         val failedToProtectUninstall = linkedSetOf<String>()
         val failedToUnprotectUninstall = linkedSetOf<String>()
-
-        FocusLog.d(FocusEventId.POLICY_APPLY_START, "│ uninstallProtect: toProtect=${toProtect.size} toUnprotect=${toUnprotect.size}")
-        toProtect.forEach { pkg ->
+        delta.toProtectUninstall.forEach { pkg ->
             runCatching { facade.setUninstallBlocked(pkg, true) }
                 .onFailure {
                     failedToProtectUninstall += pkg
-                    errors += "setUninstallBlocked($pkg,true) failed: ${it.message}"
-                    FocusLog.e(FocusEventId.POLICY_APPLY_START, "│ ❌ setUninstallBlocked($pkg,true) FAILED: ${it.message}")
+                    reversibleErrors += "setUninstallBlocked($pkg,true) failed: ${it.message}"
                 }
         }
-        toUnprotect.forEach { pkg ->
+        delta.toUnprotectUninstall.forEach { pkg ->
             runCatching { facade.setUninstallBlocked(pkg, false) }
                 .onFailure {
                     failedToUnprotectUninstall += pkg
-                    errors += "setUninstallBlocked($pkg,false) failed: ${it.message}"
-                    FocusLog.e(FocusEventId.POLICY_APPLY_START, "│ ❌ setUninstallBlocked($pkg,false) FAILED: ${it.message}")
+                    reversibleErrors += "setUninstallBlocked($pkg,false) failed: ${it.message}"
                 }
         }
-        val desiredUserControlDisabled = desiredUserControlDisabledPackages(desiredUninstallProtected)
+
+        val desiredUserControlDisabled = desiredUserControlDisabledPackages(desired.uninstallProtected)
         if (facade.supportsUserControlDisabledPackages()) {
-            FocusLog.d(FocusEventId.POLICY_APPLY_START, "│ userControlDisabled: ${desiredUserControlDisabled.size} packages")
             runCatching { facade.setUserControlDisabledPackages(desiredUserControlDisabled.toList()) }
-                .onFailure {
-                    errors += "setUserControlDisabledPackages failed: ${it.message}"
-                }
+                .onFailure { reversibleErrors += "setUserControlDisabledPackages failed: ${it.message}" }
         }
 
-        val desiredRestrictions = state.restrictions
-        val managedRestrictions = managedRestrictions(desiredRestrictions)
-        FocusLog.d(FocusEventId.LOCK_CALC, "│ restrictions: desired=${desiredRestrictions.size} managed=${managedRestrictions.size}")
-        managedRestrictions.forEach { restriction ->
-            val shouldEnable = desiredRestrictions.contains(restriction)
-            runCatching {
-                if (shouldEnable) {
-                    facade.addUserRestriction(restriction)
-                } else {
-                    facade.clearUserRestriction(restriction)
-                }
-            }.onSuccess {
-                FocusLog.v(FocusEventId.LOCK_CALC, "│   restriction: $restriction ${if (shouldEnable) "SET" else "CLEARED"}")
-            }.onFailure {
-                if (PolicyRestrictions.isBestEffort(restriction)) {
-                    FocusLog.v(FocusEventId.LOCK_CALC, "│   restriction: $restriction (best-effort) failed: ${it.message}")
-                    return@onFailure
-                }
-                if (!shouldEnable && PolicyRestrictions.isBestEffortOnClear(restriction)) return@onFailure
-                val op = if (shouldEnable) "addRestriction" else "clearRestriction"
-                errors += "$op($restriction) failed: ${it.message}"
-                FocusLog.e(FocusEventId.LOCK_CALC, "│ ❌ $op($restriction) FAILED: ${it.message}")
-            }
-        }
-
-        if (desiredRestrictions.contains(UserManager.DISALLOW_DEBUGGING_FEATURES)) {
-            runCatching {
-                facade.setGlobalSetting(Settings.Global.ADB_ENABLED, "0")
-            }.onFailure {
-                errors += "setGlobalSetting(${Settings.Global.ADB_ENABLED}) failed: ${it.message}"
-            }
-        }
-
-        runCatching { facade.setAutoTimeRequired(state.requireAutoTime) }
-            .onFailure { errors += "setAutoTimeRequired failed: ${it.message}" }
-
-        FocusLog.d(FocusEventId.LOCK_CALC, "│ lockTask: allowlist=${state.lockTaskAllowlist.size} features=${state.lockTaskFeatures}")
-        runCatching { facade.setBlankDeviceOwnerLockScreenInfo() }
-            .onFailure { errors += "setDeviceOwnerLockScreenInfo failed: ${it.message}" }
-
-        runCatching { facade.setLockTaskPackages(state.lockTaskAllowlist.toList()) }
-            .onFailure { errors += "setLockTaskPackages failed: ${it.message}" }
-
-        runCatching { facade.setLockTaskFeatures(state.lockTaskFeatures) }
-            .onFailure { errors += "setLockTaskFeatures failed: ${it.message}" }
-
-        runCatching { facade.setStatusBarDisabled(state.statusBarDisabled) }
-            .onSuccess { applied ->
-                if (applied == false) {
-                    errors += "setStatusBarDisabled returned false"
-                }
-            }
-            .onFailure { errors += "setStatusBarDisabled failed: ${it.message}" }
-
-        FocusLog.d(FocusEventId.MANAGED_NETWORK_CHANGE, "│ applyManagedNetworkPolicy: ${state.managedNetworkPolicy}")
-        applyManagedNetworkPolicy(state.managedNetworkPolicy, errors)
-
-        runCatching { facade.setAsHomeForKiosk(false) }
-            .onFailure { errors += "setAsHomeForKiosk failed: ${it.message}" }
-
-        val hardProtectedPackages = protectedPackagesProvider?.getHardProtectedPackages().orEmpty()
-        val desiredSuspendTargets = state.suspendTargets - hardProtectedPackages
-        val trackedPreviouslySuspended = state.previouslySuspended - hardProtectedPackages
-        val skippedProtectedPackages = state.suspendTargets.intersect(hardProtectedPackages) +
-            state.previouslySuspended.intersect(hardProtectedPackages)
-        val toSuspend = desiredSuspendTargets - trackedPreviouslySuspended
-        val toUnsuspend = trackedPreviouslySuspended - desiredSuspendTargets
-        if (skippedProtectedPackages.isNotEmpty()) {
-            FocusLog.w(
-                FocusEventId.SUSPEND_TARGET,
-                "protected packages excluded from suspension delta: ${skippedProtectedPackages.joinToString(",")}"
-            )
-        }
-        FocusLog.d(FocusEventId.SUSPEND_TARGET, "│ SUSPEND DELTA: toSuspend=${toSuspend.size} toUnsuspend=${toUnsuspend.size}")
-        if (toSuspend.isNotEmpty()) {
-            FocusLog.d(FocusEventId.SUSPEND_TARGET, "│   suspending: ${toSuspend.joinToString(",")}")
-        }
-        if (toUnsuspend.isNotEmpty()) {
-            FocusLog.d(FocusEventId.SUSPEND_TARGET, "│   unsuspending: ${toUnsuspend.joinToString(",")}")
-        }
         val failedToSuspend: Set<String>
         val failedToUnsuspend: Set<String>
-        if (toSuspend.isEmpty() && toUnsuspend.isEmpty()) {
-            FocusLog.d(FocusEventId.SUSPEND_TARGET, "suspension state unchanged; skipping package suspend pipeline")
-            failedToSuspend = emptySet()
-            failedToUnsuspend = emptySet()
+        if (delta.toSuspend.isNotEmpty()) {
+            val suspendReasons = state.blockReasonsByPackage.filterKeys(delta.toSuspend::contains)
+            val suspendResult = facade.setPackagesSuspended(
+                packages = delta.toSuspend.toList(),
+                suspended = true,
+                blockReasonsByPackage = suspendReasons
+            )
+            failedToSuspend = suspendResult.failedPackages
+            reversibleErrors += suspendResult.errors.map { "setPackagesSuspended(true) failed: $it" }
         } else {
-            if (toSuspend.isNotEmpty()) {
-                val suspendReasons = state.blockReasonsByPackage
-                    .filterKeys { packageName -> packageName in toSuspend }
-                val suspendResult = facade.setPackagesSuspended(
-                    packages = toSuspend.toList(),
-                    suspended = true,
-                    blockReasonsByPackage = suspendReasons
-                )
-                failedToSuspend = suspendResult.failedPackages
-                suspendResult.errors.forEach { error ->
-                    errors += "setPackagesSuspended(true) failed: $error"
-                }
-            } else {
-                failedToSuspend = emptySet()
-            }
-            if (toUnsuspend.isNotEmpty()) {
-                val unsuspendResult = facade.setPackagesSuspended(
-                    packages = toUnsuspend.toList(),
-                    suspended = false
-                )
-                failedToUnsuspend = unsuspendResult.failedPackages
-                unsuspendResult.errors.forEach { error ->
-                    errors += "setPackagesSuspended(false) failed: $error"
-                }
-            } else {
-                failedToUnsuspend = emptySet()
-            }
+            failedToSuspend = emptySet()
+        }
+        if (delta.toUnsuspend.isNotEmpty()) {
+            val unsuspendResult = facade.setPackagesSuspended(
+                packages = delta.toUnsuspend.toList(),
+                suspended = false
+            )
+            failedToUnsuspend = unsuspendResult.failedPackages
+            reversibleErrors += unsuspendResult.errors.map { "setPackagesSuspended(false) failed: $it" }
+        } else {
+            failedToUnsuspend = emptySet()
         }
         if (failedToSuspend.isNotEmpty()) {
-            errors += "Packages failed to suspend: ${failedToSuspend.sorted().joinToString(", ")}"
-            FocusLog.e(FocusEventId.SUSPEND_TARGET, "│ ❌ FAILED to suspend: ${failedToSuspend.joinToString(",")}")
+            reversibleErrors += "Packages failed to suspend: ${failedToSuspend.sorted().joinToString(", ")}"
         }
         if (failedToUnsuspend.isNotEmpty()) {
-            errors += "Packages failed to unsuspend: ${failedToUnsuspend.sorted().joinToString(", ")}"
-            FocusLog.e(FocusEventId.SUSPEND_TARGET, "│ ❌ FAILED to unsuspend: ${failedToUnsuspend.joinToString(",")}")
+            reversibleErrors += "Packages failed to unsuspend: ${failedToUnsuspend.sorted().joinToString(", ")}"
+        }
+        errors += reversibleErrors
+        phaseResults += PolicyApplyPhaseResult(
+            phase = PolicyApplyPhase.REVERSIBLE,
+            category = PolicyEnforcementCategory.CORE,
+            successful = reversibleErrors.isEmpty(),
+            errors = reversibleErrors.toList()
+        )
+
+        val supportingErrors = mutableListOf<String>()
+        val cosmeticErrors = mutableListOf<String>()
+        exitLockTaskIfNeeded(hostActivity)?.let { supportingErrors += it }
+
+        delta.restrictionsToAdd.forEach { restriction ->
+            runCatching { facade.addUserRestriction(restriction) }
+                .onFailure {
+                    if (!PolicyRestrictions.isBestEffort(restriction)) {
+                        reversibleErrors += "addRestriction($restriction) failed: ${it.message}"
+                    }
+                }
+        }
+        delta.restrictionsToClear.forEach { restriction ->
+            runCatching { facade.clearUserRestriction(restriction) }
+                .onFailure {
+                    if (!PolicyRestrictions.isBestEffortOnClear(restriction)) {
+                        reversibleErrors += "clearRestriction($restriction) failed: ${it.message}"
+                    }
+                }
         }
 
+        if (desired.userRestrictions.contains(UserManager.DISALLOW_DEBUGGING_FEATURES)) {
+            runCatching { facade.setGlobalSetting(Settings.Global.ADB_ENABLED, "0") }
+                .onFailure { reversibleErrors += "setGlobalSetting(${Settings.Global.ADB_ENABLED}) failed: ${it.message}" }
+        }
 
-        FocusLog.d(FocusEventId.POLICY_APPLY_DONE, "└── PolicyApplier.apply() END — errors=${errors.size} failedSuspend=${failedToSuspend.size} failedUnsuspend=${failedToUnsuspend.size}")
-        if (errors.isNotEmpty()) {
-            errors.forEach { e -> FocusLog.w(FocusEventId.POLICY_APPLY_DONE, "  error: $e") }
+        if (delta.shouldUpdateAutoTime) {
+            runCatching { facade.setAutoTimeRequired(desired.requireAutoTime) }
+                .onFailure { supportingErrors += "setAutoTimeRequired failed: ${it.message}" }
+        }
+
+        runCatching { facade.setBlankDeviceOwnerLockScreenInfo() }
+            .onFailure { cosmeticErrors += "setDeviceOwnerLockScreenInfo failed: ${it.message}" }
+
+        if (delta.shouldUpdateLockTaskPackages) {
+            runCatching { facade.setLockTaskPackages(desired.lockTaskPackages.toList()) }
+                .onFailure { supportingErrors += "setLockTaskPackages failed: ${it.message}" }
+        }
+        if (delta.shouldUpdateLockTaskFeatures) {
+            runCatching { facade.setLockTaskFeatures(desired.lockTaskFeatures) }
+                .onFailure { supportingErrors += "setLockTaskFeatures failed: ${it.message}" }
+        }
+        runCatching { facade.setStatusBarDisabled(desired.statusBarDisabled) }
+            .onSuccess { applied ->
+                if (applied == false) {
+                    supportingErrors += "setStatusBarDisabled returned false"
+                }
+            }
+            .onFailure { supportingErrors += "setStatusBarDisabled failed: ${it.message}" }
+
+        supportingErrors += applyManagedNetworkPolicy(desired.managedNetworkPolicy)
+
+        runCatching { facade.setAsHomeForKiosk(false) }
+            .onFailure { cosmeticErrors += "setAsHomeForKiosk failed: ${it.message}" }
+
+        if (reversibleErrors.isNotEmpty()) {
+            errors += reversibleErrors.filterNot(errors::contains)
+        }
+        if (supportingErrors.isNotEmpty()) {
+            errors += supportingErrors
+        }
+        if (cosmeticErrors.isNotEmpty()) {
+            errors += cosmeticErrors
+        }
+        phaseResults += PolicyApplyPhaseResult(
+            phase = PolicyApplyPhase.BEST_EFFORT,
+            category = PolicyEnforcementCategory.CORE,
+            successful = reversibleErrors.isEmpty(),
+            errors = reversibleErrors.toList()
+        )
+        phaseResults += PolicyApplyPhaseResult(
+            phase = PolicyApplyPhase.BEST_EFFORT,
+            category = PolicyEnforcementCategory.SUPPORTING,
+            successful = supportingErrors.isEmpty(),
+            errors = supportingErrors.toList()
+        )
+        phaseResults += PolicyApplyPhaseResult(
+            phase = PolicyApplyPhase.BEST_EFFORT,
+            category = PolicyEnforcementCategory.COSMETIC,
+            successful = cosmeticErrors.isEmpty(),
+            errors = cosmeticErrors.toList()
+        )
+
+        val observedAfter = readAuthoritativeState(desired, state)
+        val verification = verifyPrepared(desired, state, observedAfter, hostActivity)
+        phaseResults += PolicyApplyPhaseResult(
+            phase = PolicyApplyPhase.VERIFY,
+            category = PolicyEnforcementCategory.CORE,
+            successful = verification.coreIssues.isEmpty(),
+            errors = verification.coreIssues
+        )
+        phaseResults += PolicyApplyPhaseResult(
+            phase = PolicyApplyPhase.VERIFY,
+            category = PolicyEnforcementCategory.SUPPORTING,
+            successful = verification.supportingIssues.isEmpty(),
+            errors = verification.supportingIssues
+        )
+        phaseResults += PolicyApplyPhaseResult(
+            phase = PolicyApplyPhase.VERIFY,
+            category = PolicyEnforcementCategory.COSMETIC,
+            successful = verification.cosmeticIssues.isEmpty(),
+            errors = verification.cosmeticIssues
+        )
+
+        val repairPlan = repairIfNeeded(verification)
+        if (repairPlan?.required == true) {
+            phaseResults += PolicyApplyPhaseResult(
+                phase = PolicyApplyPhase.REPAIR,
+                category = if (verification.coreIssues.isNotEmpty()) {
+                    PolicyEnforcementCategory.CORE
+                } else {
+                    PolicyEnforcementCategory.SUPPORTING
+                },
+                successful = false,
+                errors = listOfNotNull(repairPlan.reason)
+            )
         }
 
         return ApplyResult(
@@ -215,174 +243,274 @@ internal class PolicyApplier(
             failedToUnsuspend = failedToUnsuspend,
             failedToProtectUninstall = failedToProtectUninstall,
             failedToUnprotectUninstall = failedToUnprotectUninstall,
-            errors = errors
+            errors = errors,
+            observedState = observedAfter,
+            phaseResults = phaseResults,
+            repairPlan = repairPlan,
+            verification = verification,
+            coreFailure = reversibleErrors.isNotEmpty() || verification.coreIssues.isNotEmpty(),
+            supportingFailure = supportingErrors.isNotEmpty() || verification.supportingIssues.isNotEmpty()
         )
     }
 
     fun verify(state: PolicyState, hostActivity: Activity? = null): PolicyVerificationResult {
-        FocusLog.d(FocusEventId.POLICY_VERIFY_PASS, "┌── PolicyApplier.verify() START ──")
-        val issues = mutableListOf<String>()
+        val desired = prepare(state)
+        val observed = readAuthoritativeState(desired, state)
+        return verifyPrepared(desired, state, observed, hostActivity)
+    }
+
+    private fun prepare(state: PolicyState): DesiredDevicePolicyState {
+        val hardProtectedPackages = protectedPackagesProvider?.getHardProtectedPackages().orEmpty()
+        return DesiredDevicePolicyState(
+            suspendTargets = (state.suspendTargets - hardProtectedPackages).toSet(),
+            uninstallProtected = buildSet {
+                if (state.blockSelfUninstall) add(facade.packageName)
+                addAll(state.uninstallProtectedPackages)
+            },
+            userRestrictions = managedRestrictions(state.restrictions),
+            managedNetworkPolicy = state.managedNetworkPolicy,
+            lockTaskPackages = state.lockTaskAllowlist,
+            lockTaskFeatures = state.lockTaskFeatures,
+            requireAutoTime = state.requireAutoTime,
+            statusBarDisabled = state.statusBarDisabled
+        )
+    }
+
+    private fun readAuthoritativeState(
+        desired: DesiredDevicePolicyState,
+        tracked: PolicyState
+    ): ObservedDevicePolicyState {
+        val suspendCandidates = (desired.suspendTargets + tracked.previouslySuspended)
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .toSet()
+        val observedSuspended = linkedSetOf<String>()
+        var suspensionAuthoritative = facade.canVerifyPackageSuspension()
+        if (suspensionAuthoritative) {
+            suspendCandidates.forEach { packageName ->
+                val suspended = facade.isPackageSuspended(packageName)
+                if (suspended == null) {
+                    suspensionAuthoritative = false
+                } else if (suspended) {
+                    observedSuspended += packageName
+                }
+            }
+        }
+        val suspendedPackages = if (suspensionAuthoritative) {
+            observedSuspended.toSet()
+        } else {
+            tracked.previouslySuspended.intersect(suspendCandidates)
+        }
+
+        val uninstallCandidates = (desired.uninstallProtected + tracked.previouslyUninstallProtectedPackages)
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .toSet()
+        val observedUninstallProtected = linkedSetOf<String>()
+        var uninstallProtectionAuthoritative = true
+        uninstallCandidates.forEach { packageName ->
+            val blocked = runCatching { facade.isUninstallBlocked(packageName) }.getOrElse {
+                uninstallProtectionAuthoritative = false
+                false
+            }
+            if (blocked) observedUninstallProtected += packageName
+        }
+        val uninstallProtectedPackages = if (uninstallProtectionAuthoritative) {
+            observedUninstallProtected.toSet()
+        } else {
+            tracked.previouslyUninstallProtectedPackages.intersect(uninstallCandidates)
+        }
+
+        val userControlDisabledPackages = if (facade.supportsUserControlDisabledPackages()) {
+            runCatching { facade.getUserControlDisabledPackages() }.getOrDefault(emptySet())
+        } else {
+            emptySet()
+        }
+
+        val observedRestrictions = desired.userRestrictions.filterTo(linkedSetOf()) { restriction ->
+            runCatching { facade.hasUserRestriction(restriction) }.getOrDefault(false)
+        }
+
+        val lockTaskPackages = runCatching { facade.getLockTaskPackages().toSet() }.getOrDefault(emptySet())
+        val lockTaskFeatures = runCatching { facade.getLockTaskFeatures() }.getOrNull()
+        val autoTimeRequired = runCatching { facade.isAutoTimeRequired() }.getOrNull()
+
+        return ObservedDevicePolicyState(
+            suspendedPackages = suspendedPackages,
+            suspensionAuthoritative = suspensionAuthoritative,
+            uninstallProtectedPackages = uninstallProtectedPackages,
+            uninstallProtectionAuthoritative = uninstallProtectionAuthoritative,
+            userControlDisabledPackages = userControlDisabledPackages,
+            userControlDisabledAuthoritative = facade.supportsUserControlDisabledPackages(),
+            userRestrictions = observedRestrictions,
+            lockTaskPackages = lockTaskPackages,
+            lockTaskFeatures = lockTaskFeatures,
+            autoTimeRequired = autoTimeRequired
+        )
+    }
+
+    private fun computeDelta(
+        current: ObservedDevicePolicyState,
+        desired: DesiredDevicePolicyState,
+        tracked: PolicyState
+    ): PolicyApplyDelta {
+        val currentSuspended = if (current.suspensionAuthoritative) {
+            current.suspendedPackages
+        } else {
+            tracked.previouslySuspended.intersect(desired.suspendTargets + tracked.previouslySuspended)
+        }
+        val currentUninstallProtected = if (current.uninstallProtectionAuthoritative) {
+            current.uninstallProtectedPackages
+        } else {
+            tracked.previouslyUninstallProtectedPackages.intersect(
+                desired.uninstallProtected + tracked.previouslyUninstallProtectedPackages
+            )
+        }
+        return PolicyApplyDelta(
+            toSuspend = desired.suspendTargets - currentSuspended,
+            toUnsuspend = currentSuspended - desired.suspendTargets,
+            toProtectUninstall = desired.uninstallProtected - currentUninstallProtected,
+            toUnprotectUninstall = currentUninstallProtected - desired.uninstallProtected,
+            restrictionsToAdd = desired.userRestrictions - current.userRestrictions,
+            restrictionsToClear = current.userRestrictions - desired.userRestrictions,
+            shouldUpdateLockTaskPackages = current.lockTaskPackages != desired.lockTaskPackages,
+            shouldUpdateLockTaskFeatures = current.lockTaskFeatures == null || current.lockTaskFeatures != desired.lockTaskFeatures,
+            shouldUpdateAutoTime = current.autoTimeRequired == null || current.autoTimeRequired != desired.requireAutoTime
+        )
+    }
+
+    private fun verifyPrepared(
+        desired: DesiredDevicePolicyState,
+        tracked: PolicyState,
+        observed: ObservedDevicePolicyState,
+        hostActivity: Activity?
+    ): PolicyVerificationResult {
+        val coreIssues = mutableListOf<String>()
+        val supportingIssues = mutableListOf<String>()
+        val cosmeticIssues = mutableListOf<String>()
 
         if (!facade.isDeviceOwner()) {
-            issues += "Device owner not active"
-            FocusLog.e(FocusEventId.POLICY_VERIFY_FAIL, "│ ❌ Device owner not active")
+            coreIssues += "Device owner not active"
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val lockTaskPackages = runCatching { facade.getLockTaskPackages().toSet() }.getOrElse {
-                issues += "Unable to read lock task packages: ${it.message}"
-                emptySet()
-            }
-            if (lockTaskPackages != state.lockTaskAllowlist) {
-                issues += "Lock task packages mismatch"
-                FocusLog.d(FocusEventId.POLICY_VERIFY_FAIL, "│ lockTask mismatch: actual=${lockTaskPackages.size} expected=${state.lockTaskAllowlist.size}")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && observed.lockTaskPackages != desired.lockTaskPackages) {
+            supportingIssues += "Lock task packages mismatch"
+        }
+        val observedLockTaskFeatures = observed.lockTaskFeatures
+        if (observedLockTaskFeatures != null && observedLockTaskFeatures != desired.lockTaskFeatures) {
+            supportingIssues += "Lock task features mismatch"
+        }
+        if (runCatching { facade.isHomeAppPinnedToSelf() }.getOrNull() == true) {
+            cosmeticIssues += "Home app pinning still active"
+        }
+
+        verifyManagedNetworkPolicy(desired.managedNetworkPolicy, supportingIssues)
+
+        desired.userRestrictions.forEach { restriction ->
+            if (!observed.userRestrictions.contains(restriction)) {
+                coreIssues += "Restriction missing: $restriction"
             }
         }
-        val lockTaskFeatures = runCatching { facade.getLockTaskFeatures() }.getOrNull()
-        if (lockTaskFeatures != null && lockTaskFeatures != state.lockTaskFeatures) {
-            issues += "Lock task features mismatch"
-            FocusLog.d(FocusEventId.POLICY_VERIFY_FAIL, "│ lockTaskFeatures mismatch: actual=$lockTaskFeatures expected=${state.lockTaskFeatures}")
-        }
-        val homePinned = runCatching { facade.isHomeAppPinnedToSelf() }.getOrNull()
-        if (homePinned == true) issues += "Home app pinning still active"
-
-        verifyManagedNetworkPolicy(state.managedNetworkPolicy, issues)
-
-        val desiredRestrictions = state.restrictions
-        managedRestrictions(desiredRestrictions).forEach { restriction ->
-            val shouldBeActive = desiredRestrictions.contains(restriction)
-            val active = runCatching { facade.hasUserRestriction(restriction) }.getOrDefault(false)
-            if (shouldBeActive && !active) {
-                issues += "Restriction missing: $restriction"
-                FocusLog.d(FocusEventId.POLICY_VERIFY_FAIL, "│ restriction missing: $restriction")
-            }
-            if (!shouldBeActive && active) {
-                if (!PolicyRestrictions.isBestEffortOnClear(restriction)) {
-                    issues += "Restriction still active: $restriction"
-                    FocusLog.d(FocusEventId.POLICY_VERIFY_FAIL, "│ restriction still active: $restriction")
-                }
+        (observed.userRestrictions - desired.userRestrictions).forEach { restriction ->
+            if (!PolicyRestrictions.isBestEffortOnClear(restriction)) {
+                coreIssues += "Restriction still active: $restriction"
             }
         }
 
-        val expectedUninstallBlocked = buildSet {
-            if (state.blockSelfUninstall) add(facade.packageName)
-            addAll(state.uninstallProtectedPackages)
-        }
-        expectedUninstallBlocked.forEach { pkg ->
-            val uninstallBlocked = runCatching { facade.isUninstallBlocked(pkg) }.getOrDefault(false)
-            if (!uninstallBlocked) {
-                issues += "Uninstall block missing: $pkg"
-                FocusLog.d(FocusEventId.POLICY_VERIFY_FAIL, "│ uninstall block missing: $pkg")
+        desired.uninstallProtected.forEach { packageName ->
+            if (!observed.uninstallProtectedPackages.contains(packageName)) {
+                coreIssues += "Uninstall block missing: $packageName"
             }
         }
-        val shouldBeUninstallUnblocked = state.previouslyUninstallProtectedPackages - expectedUninstallBlocked
-        shouldBeUninstallUnblocked.forEach { pkg ->
-            val uninstallBlocked = runCatching { facade.isUninstallBlocked(pkg) }.getOrDefault(false)
-            if (uninstallBlocked) {
-                issues += "Uninstall block still active: $pkg"
-                FocusLog.d(FocusEventId.POLICY_VERIFY_FAIL, "│ uninstall block NOT cleared: $pkg")
-            }
+        (observed.uninstallProtectedPackages - desired.uninstallProtected).forEach { packageName ->
+            coreIssues += "Uninstall block still active: $packageName"
         }
+
         if (facade.supportsUserControlDisabledPackages()) {
-            val expectedUserControlDisabled = desiredUserControlDisabledPackages(expectedUninstallBlocked)
-            val actualUserControlDisabled = runCatching { facade.getUserControlDisabledPackages() }.getOrElse {
-                issues += "Unable to read user-control-disabled packages: ${it.message}"
-                emptySet()
-            }
-            expectedUserControlDisabled.forEach { pkg ->
-                if (!actualUserControlDisabled.contains(pkg)) {
-                    issues += "User control disable missing: $pkg"
+            val expectedUserControlDisabled = desiredUserControlDisabledPackages(desired.uninstallProtected)
+            expectedUserControlDisabled.forEach { packageName ->
+                if (!observed.userControlDisabledPackages.contains(packageName)) {
+                    coreIssues += "User control disable missing: $packageName"
                 }
             }
-            val shouldBeUserControlEnabled = state.previouslyUninstallProtectedPackages - expectedUninstallBlocked
-            shouldBeUserControlEnabled.forEach { pkg ->
-                if (actualUserControlDisabled.contains(pkg)) {
-                    issues += "User control disable still active: $pkg"
+            (observed.userControlDisabledPackages - expectedUserControlDisabled).forEach { packageName ->
+                if (packageName in tracked.previouslyUninstallProtectedPackages || packageName in desired.uninstallProtected) {
+                    coreIssues += "User control disable still active: $packageName"
                 }
             }
         }
 
-        val autoTimeRequired = runCatching { facade.isAutoTimeRequired() }.getOrDefault(false)
-        if (autoTimeRequired != state.requireAutoTime) {
-            issues += "Auto time requirement mismatch"
+        val autoTimeRequired = observed.autoTimeRequired
+        if (autoTimeRequired != null && autoTimeRequired != desired.requireAutoTime) {
+            supportingIssues += "Auto time requirement mismatch"
         }
 
         var suspendedChecked = 0
         var suspendedMismatchCount = 0
-        var suspendUnknownCount = 0
-        if (facade.canVerifyPackageSuspension()) {
-            val hardProtectedPackages = protectedPackagesProvider?.getHardProtectedPackages().orEmpty()
-            val shouldBeSuspended = state.suspendTargets - hardProtectedPackages
-            val shouldBeUnsuspended = (state.previouslySuspended - hardProtectedPackages) - shouldBeSuspended
-            FocusLog.d(FocusEventId.POLICY_VERIFY_PASS, "│ verifying suspension: shouldSuspend=${shouldBeSuspended.size} shouldUnsuspend=${shouldBeUnsuspended.size}")
-            shouldBeSuspended.forEach { packageName ->
-                val suspended = facade.isPackageSuspended(packageName)
-                if (suspended == null) {
-                    suspendUnknownCount += 1
-                    if (suspendUnknownCount <= 10) issues += "Unable to verify suspend state for $packageName"
-                    return@forEach
-                }
+        if (observed.suspensionAuthoritative) {
+            desired.suspendTargets.forEach { packageName ->
                 suspendedChecked += 1
-                if (!suspended) {
+                if (!observed.suspendedPackages.contains(packageName)) {
                     suspendedMismatchCount += 1
-                    if (suspendedMismatchCount <= 10) {
-                        issues += "Suspend mismatch for $packageName"
-                        FocusLog.d(FocusEventId.POLICY_VERIFY_FAIL, "│ suspend mismatch: $packageName should be SUSPENDED but is NOT")
-                    }
+                    coreIssues += "Suspend mismatch for $packageName"
                 }
             }
-            shouldBeUnsuspended.forEach { packageName ->
-                val suspended = facade.isPackageSuspended(packageName)
-                if (suspended == null) {
-                    suspendUnknownCount += 1
-                    if (suspendUnknownCount <= 10) issues += "Unable to verify unsuspend state for $packageName"
-                    return@forEach
-                }
+            (observed.suspendedPackages - desired.suspendTargets).forEach { packageName ->
                 suspendedChecked += 1
-                if (suspended) {
-                    suspendedMismatchCount += 1
-                    if (suspendedMismatchCount <= 10) {
-                        issues += "Unsuspend mismatch for $packageName"
-                        FocusLog.d(FocusEventId.POLICY_VERIFY_FAIL, "│ unsuspend mismatch: $packageName should be UNSUSPENDED but is NOT")
-                    }
-                }
-            }
-            if (suspendedMismatchCount > 10) {
-                issues += "Additional suspend mismatches: ${suspendedMismatchCount - 10}"
-            }
-            if (suspendUnknownCount > 10) {
-                issues += "Additional suspend verification unknowns: ${suspendUnknownCount - 10}"
+                suspendedMismatchCount += 1
+                coreIssues += "Unsuspend mismatch for $packageName"
             }
         }
 
         val lockTaskActive = if (hostActivity != null) {
             val active = facade.lockTaskModeState() != ActivityManager.LOCK_TASK_MODE_NONE
             if (active) {
-                issues += "Lock task mode still active in foreground activity"
+                supportingIssues += "Lock task mode still active in foreground activity"
             }
             active
         } else {
             null
         }
 
-        val passed = issues.isEmpty()
-        FocusLog.d(
-            if (passed) FocusEventId.POLICY_VERIFY_PASS else FocusEventId.POLICY_VERIFY_FAIL,
-            "└── PolicyApplier.verify() END — ${if (passed) "✅ PASSED" else "❌ FAILED(${issues.size} issues)"} checked=$suspendedChecked mismatches=$suspendedMismatchCount"
-        )
-        if (!passed) {
-            issues.take(5).forEach { issue ->
-                FocusLog.d(FocusEventId.POLICY_VERIFY_FAIL, "  issue: $issue")
-            }
+        val issues = buildList {
+            addAll(coreIssues)
+            addAll(supportingIssues)
+            addAll(cosmeticIssues)
         }
-
         return PolicyVerificationResult(
-            passed = passed,
+            passed = issues.isEmpty(),
             issues = issues,
             suspendedChecked = suspendedChecked,
             suspendedMismatchCount = suspendedMismatchCount,
-            lockTaskModeActive = lockTaskActive
+            lockTaskModeActive = lockTaskActive,
+            coreIssues = coreIssues,
+            supportingIssues = supportingIssues,
+            cosmeticIssues = cosmeticIssues
         )
+    }
+
+    private fun repairIfNeeded(verification: PolicyVerificationResult): PolicyRepairPlan? {
+        return when {
+            verification.coreIssues.isNotEmpty() -> PolicyRepairPlan(
+                required = true,
+                delayMs = CORE_REPAIR_DELAY_MS,
+                reason = "Core enforcement verification failed"
+            )
+            verification.supportingIssues.isNotEmpty() -> PolicyRepairPlan(
+                required = true,
+                delayMs = SUPPORTING_REPAIR_DELAY_MS,
+                reason = "Supporting enforcement verification failed"
+            )
+            else -> null
+        }
+    }
+
+    private fun exitLockTaskIfNeeded(hostActivity: Activity?): String? {
+        if (hostActivity == null) return null
+        val lockTaskState = facade.lockTaskModeState() ?: ActivityManager.LOCK_TASK_MODE_NONE
+        if (lockTaskState == ActivityManager.LOCK_TASK_MODE_NONE) return null
+        return runOnMainThreadBlocking(hostActivity) { hostActivity.stopLockTask() }
+            ?.let { "stopLockTask failed: ${it.message}" }
     }
 
     private fun runOnMainThreadBlocking(activity: Activity, action: () -> Unit): Throwable? {
@@ -402,9 +530,9 @@ internal class PolicyApplier(
         }
         val completed = try {
             latch.await(5, TimeUnit.SECONDS)
-        } catch (ie: InterruptedException) {
+        } catch (interrupted: InterruptedException) {
             Thread.currentThread().interrupt()
-            return ie
+            return interrupted
         }
         return when {
             !completed -> IllegalStateException("Main-thread action timed out")
@@ -416,10 +544,8 @@ internal class PolicyApplier(
         return PolicyRestrictions.managed(desiredRestrictions)
     }
 
-    private fun applyManagedNetworkPolicy(
-        policy: ManagedNetworkPolicy,
-        errors: MutableList<String>
-    ) {
+    private fun applyManagedNetworkPolicy(policy: ManagedNetworkPolicy): List<String> {
+        val errors = mutableListOf<String>()
         when (policy) {
             is ManagedNetworkPolicy.ForcedVpn -> {
                 runCatching {
@@ -441,9 +567,9 @@ internal class PolicyApplier(
                 } else {
                     runCatching {
                         val result = facade.setGlobalPrivateDnsModeSpecifiedHost(policy.hostname)
-                        check(
-                            result == null || result == DevicePolicyManager.PRIVATE_DNS_SET_NO_ERROR
-                        ) { "error code=$result" }
+                        check(result == null || result == DevicePolicyManager.PRIVATE_DNS_SET_NO_ERROR) {
+                            "error code=$result"
+                        }
                     }.onFailure { errors += "setGlobalPrivateDns failed: ${it.message}" }
                 }
             }
@@ -459,6 +585,7 @@ internal class PolicyApplier(
                 }.onFailure { errors += "clearManagedPrivateDns failed: ${it.message}" }
             }
         }
+        return errors
     }
 
     private fun verifyManagedNetworkPolicy(
@@ -515,6 +642,11 @@ internal class PolicyApplier(
             }
         }
     }
+
+    private companion object {
+        const val CORE_REPAIR_DELAY_MS = 60_000L
+        const val SUPPORTING_REPAIR_DELAY_MS = 5L * 60_000L
+    }
 }
 
 internal fun desiredUserControlDisabledPackages(
@@ -527,8 +659,3 @@ internal fun desiredUserControlDisabledPackages(
         .filter(String::isNotBlank)
         .toSet()
 }
-
-
-
-
-

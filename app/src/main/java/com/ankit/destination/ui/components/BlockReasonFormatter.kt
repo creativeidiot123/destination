@@ -12,6 +12,7 @@ object BlockReasonFormatter {
         EffectiveBlockReason.OPENS_CAP -> "Blocked - Daily opens limit reached"
         EffectiveBlockReason.STRICT_INSTALL -> "Blocked - New installs blocked during schedule"
         EffectiveBlockReason.ALWAYS_BLOCKED -> "Always blocked"
+        EffectiveBlockReason.ACCESSIBILITY_RECOVERY_LOCKDOWN -> "Blocked - Accessibility recovery required"
         EffectiveBlockReason.USAGE_ACCESS_RECOVERY_LOCKDOWN -> "Blocked - Usage Access recovery required"
         EffectiveBlockReason.NONE -> "Available"
     }

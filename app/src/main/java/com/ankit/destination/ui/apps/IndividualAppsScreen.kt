@@ -106,7 +106,7 @@ fun IndividualAppsScreen(
             ) {
                 item(contentType = "header") {
                     Column(
-                        modifier = Modifier.padding(horizontal = 16.dp, top = 24.dp)
+                        modifier = Modifier.padding(start = 16.dp, top = 24.dp, end = 16.dp)
                     ) {
                         Text(
                             text = "App Usage",
@@ -140,7 +140,7 @@ fun IndividualAppsScreen(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp, bottom = 16.dp)
+                            .padding(start = 16.dp, end = 16.dp, bottom = 16.dp)
                     ) {
                         OutlinedTextField(
                             value = uiState.searchQuery,

@@ -8,6 +8,7 @@ import com.ankit.destination.data.FocusDatabase
 import com.ankit.destination.policy.EmergencyConfigInput
 import com.ankit.destination.policy.FocusEventId
 import com.ankit.destination.policy.FocusLog
+import com.ankit.destination.policy.UsageSnapshotStatus
 import com.ankit.destination.policy.UsageInputs
 import com.ankit.destination.usage.UsageAccess
 import com.ankit.destination.usage.UsageAggregator
@@ -23,7 +24,7 @@ import kotlin.math.max
 
 data class UsageSnapshotResult(
     val usageInputs: UsageInputs,
-    val usageAccessGranted: Boolean,
+    val status: UsageSnapshotStatus,
     val nextCheckAtMs: Long?
 )
 
@@ -43,11 +44,14 @@ internal class BudgetOrchestrator(context: Context) : PolicyBudgetClient {
     private val db by lazy { FocusDatabase.get(appContext) }
     private val usageReader by lazy { UsageReader(appContext) }
     private val usageStatsManager by lazy { appContext.getSystemService(UsageStatsManager::class.java) }
+    @Volatile
+    private var lastSuccessfulUsageInputs: UsageInputs? = null
 
     suspend fun readUsageSnapshot(): UsageSnapshotResult = readUsageSnapshot(ZonedDateTime.now())
 
     override suspend fun readUsageSnapshot(now: ZonedDateTime): UsageSnapshotResult = withContext(Dispatchers.IO) {
         FocusLog.d(FocusEventId.BUDGET_SNAPSHOT, "┌── readUsageSnapshot()")
+        val nowMs = now.toInstant().toEpochMilli()
         val boundaryCheckAtMs = minOf(
             UsageWindow.nextHourStartMs(now),
             UsageWindow.nextDayStartMs(now)
@@ -56,12 +60,11 @@ internal class BudgetOrchestrator(context: Context) : PolicyBudgetClient {
             FocusLog.w(FocusEventId.BUDGET_SNAPSHOT, "└── NO usage access — returning empty")
             return@withContext UsageSnapshotResult(
                 usageInputs = UsageInputs(emptyMap(), emptyMap(), emptyMap()),
-                usageAccessGranted = false,
+                status = UsageSnapshotStatus.ACCESS_MISSING,
                 nextCheckAtMs = boundaryCheckAtMs
             )
         }
 
-        val nowMs = now.toInstant().toEpochMilli()
         val dayStartMs = UsageWindow.startOfDayMs(now)
         val hourStartMs = UsageWindow.startOfHourMs(now)
         val usageInputs = runCatching {
@@ -73,11 +76,12 @@ internal class BudgetOrchestrator(context: Context) : PolicyBudgetClient {
         }.getOrElse { throwable ->
             FocusLog.e(FocusEventId.BUDGET_EVAL, "Usage ingestion failed", throwable)
             return@withContext UsageSnapshotResult(
-                usageInputs = UsageInputs(emptyMap(), emptyMap(), emptyMap()),
-                usageAccessGranted = false,
-                nextCheckAtMs = boundaryCheckAtMs
+                usageInputs = lastSuccessfulUsageInputs ?: UsageInputs(emptyMap(), emptyMap(), emptyMap()),
+                status = UsageSnapshotStatus.INGESTION_FAILED,
+                nextCheckAtMs = minOf(boundaryCheckAtMs, nowMs + INGESTION_FAILURE_RETRY_MS)
             )
         }
+        lastSuccessfulUsageInputs = usageInputs
 
         // Log top 5 apps by daily usage
         val topApps = usageInputs.usedTodayMs.entries.sortedByDescending { it.value }.take(5)
@@ -91,7 +95,7 @@ internal class BudgetOrchestrator(context: Context) : PolicyBudgetClient {
 
         UsageSnapshotResult(
             usageInputs = usageInputs,
-            usageAccessGranted = true,
+            status = UsageSnapshotStatus.OK,
             nextCheckAtMs = boundaryCheckAtMs
         )
     }
@@ -225,5 +229,9 @@ internal class BudgetOrchestrator(context: Context) : PolicyBudgetClient {
             slices = usageReader.readStrictWindow(fromMs, toMs).slices,
             opensEvents = emptyList()
         ).timeMsByPkg
+    }
+
+    private companion object {
+        const val INGESTION_FAILURE_RETRY_MS = 5L * 60_000L
     }
 }

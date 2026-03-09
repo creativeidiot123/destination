@@ -3,6 +3,8 @@ package com.ankit.destination.usage
 import android.app.AppOpsManager
 import android.content.Context
 import com.ankit.destination.enforce.PolicyApplyOrchestrator
+import com.ankit.destination.policy.ApplyTrigger
+import com.ankit.destination.policy.ApplyTriggerCategory
 import com.ankit.destination.policy.FocusEventId
 import com.ankit.destination.policy.FocusLog
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -134,7 +136,11 @@ object UsageAccessMonitor {
         FocusLog.i(FocusEventId.USAGE_ACCESS_CHECK, "requestPolicyRefresh($reason) DISPATCHING granted=$usageAccessGranted")
         PolicyApplyOrchestrator.requestApply(
             context = context,
-            reason = "usage_access:$reason"
+            trigger = ApplyTrigger(
+                category = ApplyTriggerCategory.USAGE_ACCESS,
+                source = "usage_access_monitor",
+                detail = reason
+            )
         )
     }
 
@@ -163,4 +169,3 @@ object UsageAccessMonitor {
             delta < minimumIntervalMs
     }
 }
-

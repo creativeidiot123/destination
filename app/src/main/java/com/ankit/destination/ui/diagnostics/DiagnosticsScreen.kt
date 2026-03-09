@@ -65,6 +65,7 @@ import com.ankit.destination.policy.DevicePolicyFacade
 import com.ankit.destination.policy.PackageDiagnostics
 import com.ankit.destination.policy.PackageDiagnosticsDisposition
 import com.ankit.destination.policy.PolicyEngine
+import com.ankit.destination.policy.UsageSnapshotStatus
 import com.ankit.destination.security.AppLockManager
 import com.ankit.destination.ui.components.AdminSessionBanner
 import com.ankit.destination.ui.components.AdminSessionDialog
@@ -311,11 +312,11 @@ fun DiagnosticsScreen(
                             DiagnosticTile(
                                 icon = Icons.Default.Warning,
                                 label = "Usage access",
-                                value = snapshot.usageAccessGranted.toString(),
-                                color = if (snapshot.usageAccessGranted) {
-                                    MaterialTheme.colorScheme.primary
-                                } else {
-                                    MaterialTheme.colorScheme.error
+                                value = snapshot.usageSnapshotStatus.name,
+                                color = when (snapshot.usageSnapshotStatus) {
+                                    UsageSnapshotStatus.OK -> MaterialTheme.colorScheme.primary
+                                    UsageSnapshotStatus.ACCESS_MISSING -> MaterialTheme.colorScheme.error
+                                    UsageSnapshotStatus.INGESTION_FAILED -> MaterialTheme.colorScheme.tertiary
                                 }
                             )
                             DiagnosticTile(
@@ -381,32 +382,58 @@ fun DiagnosticsScreen(
                     }
                 }
 
-                uiState.snapshot?.takeIf { it.usageAccessRecoveryLockdownActive || !it.usageAccessGranted }?.let { snapshot ->
+                uiState.snapshot?.takeIf {
+                    it.usageAccessRecoveryLockdownActive || it.usageSnapshotStatus != UsageSnapshotStatus.OK
+                }?.let { snapshot ->
                     item {
                         ElevatedCard(
                             modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
                             colors = CardDefaults.elevatedCardColors(
-                                containerColor = MaterialTheme.colorScheme.errorContainer
+                                containerColor = if (snapshot.usageSnapshotStatus == UsageSnapshotStatus.INGESTION_FAILED) {
+                                    MaterialTheme.colorScheme.tertiaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.errorContainer
+                                }
                             )
                         ) {
                             Column(modifier = Modifier.padding(16.dp)) {
                                 Text(
-                                    text = "Usage Access Recovery",
+                                    text = if (snapshot.usageSnapshotStatus == UsageSnapshotStatus.INGESTION_FAILED) {
+                                        "Usage Data Stale"
+                                    } else {
+                                        "Usage Access Recovery"
+                                    },
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                    color = if (snapshot.usageSnapshotStatus == UsageSnapshotStatus.INGESTION_FAILED) {
+                                        MaterialTheme.colorScheme.onTertiaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.onErrorContainer
+                                    }
                                 )
                                 Spacer(modifier = Modifier.height(8.dp))
                                 Text(
                                     text = snapshot.usageAccessRecoveryReason
-                                        ?: "Usage Access is currently unavailable.",
-                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                        ?: if (snapshot.usageSnapshotStatus == UsageSnapshotStatus.INGESTION_FAILED) {
+                                            "Usage ingestion failed. Last known usage remains in effect until refresh succeeds."
+                                        } else {
+                                            "Usage Access is currently unavailable."
+                                        },
+                                    color = if (snapshot.usageSnapshotStatus == UsageSnapshotStatus.INGESTION_FAILED) {
+                                        MaterialTheme.colorScheme.onTertiaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.onErrorContainer
+                                    }
                                 )
                                 if (snapshot.usageAccessRecoveryAllowlist.isNotEmpty()) {
                                     Spacer(modifier = Modifier.height(12.dp))
                                     Text(
                                         text = "Recovery allowlist: ${snapshot.usageAccessRecoveryAllowlist.sorted().joinToString()}",
-                                        color = MaterialTheme.colorScheme.onErrorContainer
+                                        color = if (snapshot.usageSnapshotStatus == UsageSnapshotStatus.INGESTION_FAILED) {
+                                            MaterialTheme.colorScheme.onTertiaryContainer
+                                        } else {
+                                            MaterialTheme.colorScheme.onErrorContainer
+                                        }
                                     )
                                 }
                             }

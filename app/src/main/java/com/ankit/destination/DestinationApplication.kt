@@ -6,6 +6,8 @@ import android.os.Bundle
 import com.ankit.destination.enforce.AccessibilityStatusMonitor
 import com.ankit.destination.enforce.PolicyApplyOrchestrator
 import com.ankit.destination.packages.PackageChangeReceiver
+import com.ankit.destination.policy.ApplyTrigger
+import com.ankit.destination.policy.ApplyTriggerCategory
 import com.ankit.destination.schedule.AlarmScheduler
 import com.ankit.destination.usage.UsageAccessMonitor
 
@@ -33,7 +35,9 @@ class DestinationApplication : Application() {
                     if (startedActivityCount == 1) {
                         AccessibilityStatusMonitor.refreshNow(
                             context = this@DestinationApplication,
-                            reason = "app_foreground"
+                            reason = "app_foreground",
+                            requestPolicyRefreshIfChanged = true,
+                            minimumIntervalMs = LIFECYCLE_REFRESH_THROTTLE_MS
                         )
                         UsageAccessMonitor.refreshNow(
                             context = this@DestinationApplication,
@@ -43,7 +47,11 @@ class DestinationApplication : Application() {
                         )
                         PolicyApplyOrchestrator.requestApply(
                             context = this@DestinationApplication,
-                            reason = "app_foreground"
+                            trigger = ApplyTrigger(
+                                category = ApplyTriggerCategory.APP_FOREGROUND,
+                                source = "destination_application",
+                                detail = "app_foreground"
+                            )
                         )
                     }
                 }
@@ -51,7 +59,8 @@ class DestinationApplication : Application() {
                 override fun onActivityResumed(activity: Activity) {
                     AccessibilityStatusMonitor.refreshNow(
                         context = this@DestinationApplication,
-                        reason = "activity_resume:${activity.javaClass.simpleName}"
+                        reason = "activity_resume:${activity.javaClass.simpleName}",
+                        requestPolicyRefreshIfChanged = true
                     )
                     UsageAccessMonitor.refreshNow(
                         context = this@DestinationApplication,
