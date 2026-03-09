@@ -49,6 +49,7 @@ import com.ankit.destination.ui.UiInvalidationBus
 import com.ankit.destination.ui.components.AdminSessionBanner
 import com.ankit.destination.ui.components.AdminSessionDialog
 import com.ankit.destination.ui.components.collectAsStateWithLifecycleCompat
+import com.ankit.destination.ui.components.rememberTapFeedback
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
@@ -66,6 +67,7 @@ fun DeviceControlsScreen(
     )
     val uiState by viewModel.uiState.collectAsStateWithLifecycleCompat()
     val invalidation by UiInvalidationBus.latest.collectAsStateWithLifecycleCompat()
+    val tapSound = rememberTapFeedback()
 
     LaunchedEffect(viewModel, invalidation.version) {
         viewModel.onInvalidation(invalidation.version)
@@ -117,6 +119,7 @@ fun DeviceControlsScreen(
             confirmButton = {
                 Button(
                     onClick = {
+                        tapSound()
                         if (newPass == confirmPass && newPass.length >= 4) {
                             viewModel.setPassword(newPass)
                         } else {
@@ -128,7 +131,10 @@ fun DeviceControlsScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { viewModel.dismissSetPasswordDialog() }) {
+                TextButton(onClick = {
+                    tapSound()
+                    viewModel.dismissSetPasswordDialog()
+                }) {
                     Text("Cancel")
                 }
             }
@@ -217,17 +223,26 @@ fun DeviceControlsScreen(
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             FilterChip(
                                 selected = uiState.managedNetworkMode == ManagedNetworkModeSetting.UNMANAGED,
-                                onClick = { viewModel.updateManagedNetworkMode(ManagedNetworkModeSetting.UNMANAGED) },
+                                onClick = {
+                                    tapSound()
+                                    viewModel.updateManagedNetworkMode(ManagedNetworkModeSetting.UNMANAGED)
+                                },
                                 label = { Text("Unmanaged") }
                             )
                             FilterChip(
                                 selected = uiState.managedNetworkMode == ManagedNetworkModeSetting.FORCED_VPN,
-                                onClick = { viewModel.updateManagedNetworkMode(ManagedNetworkModeSetting.FORCED_VPN) },
+                                onClick = {
+                                    tapSound()
+                                    viewModel.updateManagedNetworkMode(ManagedNetworkModeSetting.FORCED_VPN)
+                                },
                                 label = { Text("Force VPN") }
                             )
                             FilterChip(
                                 selected = uiState.managedNetworkMode == ManagedNetworkModeSetting.FORCED_PRIVATE_DNS,
-                                onClick = { viewModel.updateManagedNetworkMode(ManagedNetworkModeSetting.FORCED_PRIVATE_DNS) },
+                                onClick = {
+                                    tapSound()
+                                    viewModel.updateManagedNetworkMode(ManagedNetworkModeSetting.FORCED_PRIVATE_DNS)
+                                },
                                 label = { Text("Force DNS") }
                             )
                         }
@@ -258,7 +273,10 @@ fun DeviceControlsScreen(
                                     )
                                     Switch(
                                         checked = uiState.managedVpnLockdown,
-                                        onCheckedChange = viewModel::updateManagedVpnLockdown
+                                        onCheckedChange = {
+                                            tapSound()
+                                            viewModel.updateManagedVpnLockdown(it)
+                                        }
                                     )
                                 }
                             }
@@ -274,7 +292,10 @@ fun DeviceControlsScreen(
                             }
                         }
                         Spacer(modifier = Modifier.height(16.dp))
-                        Button(onClick = { viewModel.saveNetworkSettings() }) {
+                        Button(onClick = {
+                            tapSound()
+                            viewModel.saveNetworkSettings()
+                        }) {
                             Text("Save network policy")
                         }
                     }
@@ -309,7 +330,10 @@ fun DeviceControlsScreen(
                         trailingContent = {
                             Switch(
                                 checked = uiState.protectionActive,
-                                onCheckedChange = { viewModel.requestProtectionToggle() },
+                                onCheckedChange = {
+                                    tapSound()
+                                    viewModel.requestProtectionToggle()
+                                },
                                 colors = SwitchDefaults.colors(
                                     checkedThumbColor = MaterialTheme.colorScheme.primary,
                                     checkedTrackColor = MaterialTheme.colorScheme.primaryContainer
@@ -418,6 +442,7 @@ private fun IconWithTint(
 
 @Composable
 fun DeviceToggleCard(title: String, desc: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    val tapSound = rememberTapFeedback()
     ElevatedCard(
         modifier = Modifier
             .fillMaxWidth()
@@ -430,7 +455,13 @@ fun DeviceToggleCard(title: String, desc: String, checked: Boolean, onCheckedCha
             headlineContent = { Text(title, style = MaterialTheme.typography.titleMedium) },
             supportingContent = { Text(desc, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) },
             trailingContent = {
-                Switch(checked = checked, onCheckedChange = onCheckedChange)
+                Switch(
+                    checked = checked,
+                    onCheckedChange = {
+                        tapSound()
+                        onCheckedChange(it)
+                    }
+                )
             }
         )
     }

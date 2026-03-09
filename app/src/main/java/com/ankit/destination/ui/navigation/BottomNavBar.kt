@@ -4,6 +4,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -17,13 +18,15 @@ import androidx.navigation.NavDestination.Companion.hasRoute
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.currentBackStackEntryAsState
+import com.ankit.destination.ui.components.rememberTapFeedback
 
 @Composable
 fun DestinationBottomBar(navController: NavController) {
+    val tapSound = rememberTapFeedback()
     val items = listOf(
         BottomNavItem("Overview", DeviceControlsRoute, Icons.Default.Home),
         // Tab 2: Global rule sets (Allowlist, blocklists, uninstall protection)
-        BottomNavItem("Rules", AppRulesRoute, Icons.Default.Warning),
+        BottomNavItem("Rules", AppRulesRoute, Icons.Default.Security),
         // Tab 3: Group based schedule settings and rules
         BottomNavItem("Groups", GroupListRoute, Icons.Default.Group),
         // Tab 4: Individual app limits and charts
@@ -53,6 +56,7 @@ fun DestinationBottomBar(navController: NavController) {
                     unselectedTextColor = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant
                 ),
                 onClick = {
+                    tapSound()
                     navController.navigate(item.route) {
                         popUpTo(navController.graph.findStartDestination().id) {
                             saveState = true

@@ -412,7 +412,16 @@ internal class PolicyApplier(
 
         desired.userRestrictions.forEach { restriction ->
             if (!observed.userRestrictions.contains(restriction)) {
-                coreIssues += "Restriction missing: $restriction"
+                val issue = "Restriction missing: $restriction"
+                if (
+                    restriction == UserManager.DISALLOW_CONFIG_DATE_TIME &&
+                    desired.requireAutoTime &&
+                    observed.autoTimeRequired == true
+                ) {
+                    supportingIssues += issue
+                } else {
+                    coreIssues += issue
+                }
             }
         }
         (observed.userRestrictions - desired.userRestrictions).forEach { restriction ->
@@ -462,7 +471,7 @@ internal class PolicyApplier(
             (observed.suspendedPackages - desired.suspendTargets).forEach { packageName ->
                 suspendedChecked += 1
                 suspendedMismatchCount += 1
-                coreIssues += "Unsuspend mismatch for $packageName"
+                supportingIssues += "Unsuspend mismatch for $packageName"
             }
         }
 

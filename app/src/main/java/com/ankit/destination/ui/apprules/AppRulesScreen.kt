@@ -55,6 +55,7 @@ import com.ankit.destination.ui.components.AdminSessionDialog
 import com.ankit.destination.ui.components.AppPickerDialog
 import com.ankit.destination.ui.components.BulkPackageInputDialog
 import com.ankit.destination.ui.components.collectAsStateWithLifecycleCompat
+import com.ankit.destination.ui.components.rememberTapFeedback
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
@@ -72,6 +73,7 @@ fun AppRulesScreen(
     )
     val uiState by viewModel.uiState.collectAsStateWithLifecycleCompat()
     val invalidation by UiInvalidationBus.latest.collectAsStateWithLifecycleCompat()
+    val tapSound = rememberTapFeedback()
     var showPicker by remember { mutableStateOf(false) }
     var showBulkInput by remember { mutableStateOf(false) }
     var showAddMenu by remember { mutableStateOf(false) }
@@ -116,6 +118,7 @@ fun AppRulesScreen(
             selectedPackageNames = emptySet(),
             onDismiss = { showPicker = false },
             onConfirm = { selected ->
+                tapSound()
                 showPicker = false
                 viewModel.addRules(selectedCategory, selected)
             }
@@ -126,6 +129,7 @@ fun AppRulesScreen(
         BulkPackageInputDialog(
             onDismiss = { showBulkInput = false },
             onConfirm = { packages ->
+                tapSound()
                 showBulkInput = false
                 viewModel.addRules(selectedCategory, packages)
             }
@@ -137,6 +141,7 @@ fun AppRulesScreen(
             Box {
                 FloatingActionButton(
                     onClick = {
+                        tapSound()
                         if (selectedCategory == AppRuleCategory.BLOCKLIST) {
                             showAddMenu = true
                         } else {
@@ -153,6 +158,7 @@ fun AppRulesScreen(
                     DropdownMenuItem(
                         text = { Text("Select apps") },
                         onClick = {
+                            tapSound()
                             showAddMenu = false
                             showPicker = true
                         }
@@ -160,6 +166,7 @@ fun AppRulesScreen(
                     DropdownMenuItem(
                         text = { Text("Paste package list") },
                         onClick = {
+                            tapSound()
                             showAddMenu = false
                             showBulkInput = true
                         }
@@ -179,7 +186,10 @@ fun AppRulesScreen(
                 tabs.forEachIndexed { index, (title, _) ->
                     Tab(
                         selected = selectedTabIndex == index,
-                        onClick = { selectedTabIndex = index },
+                        onClick = {
+                            tapSound()
+                            selectedTabIndex = index
+                        },
                         text = { Text(title, fontWeight = if (selectedTabIndex == index) FontWeight.Bold else FontWeight.Normal) },
                         selectedContentColor = MaterialTheme.colorScheme.primary,
                         unselectedContentColor = MaterialTheme.colorScheme.onSurfaceVariant
@@ -288,7 +298,10 @@ fun AppRulesScreen(
                                     },
                                     trailingContent = {
                                         androidx.compose.material3.IconButton(
-                                            onClick = { viewModel.removeRule(selectedCategory, rule) },
+                                            onClick = {
+                                                tapSound()
+                                                viewModel.removeRule(selectedCategory, rule)
+                                            },
                                             enabled = !rule.isLocked
                                         ) {
                                             androidx.compose.material3.Icon(

@@ -246,6 +246,52 @@ class PolicyApplierLogicTest {
         assertTrue(result.verification?.supportingIssues?.contains("Auto time requirement mismatch") == true)
     }
 
+    @Test
+    fun apply_missingDateTimeRestriction_isSupportingWhenAutoTimeRequirementMatches() {
+        val facade = FakeDevicePolicyClient().apply {
+            ignoreRestrictionWrites = true
+        }
+        val applier = PolicyApplier(facade)
+
+        val result = applier.apply(
+            state = policyState(
+                suspendTargets = emptySet(),
+                previouslySuspended = emptySet(),
+                restrictions = setOf(UserManager.DISALLOW_CONFIG_DATE_TIME)
+            ).copy(requireAutoTime = true)
+        )
+
+        assertFalse(result.coreFailure)
+        assertTrue(result.supportingFailure)
+        assertTrue(result.verification?.coreIssues?.isEmpty() == true)
+        assertTrue(
+            result.verification?.supportingIssues?.contains(
+                "Restriction missing: ${UserManager.DISALLOW_CONFIG_DATE_TIME}"
+            ) == true
+        )
+    }
+
+    @Test
+    fun apply_unsuspendMismatch_isSupportingInsteadOfCore() {
+        val facade = FakeDevicePolicyClient().apply {
+            seedSuspended("a")
+            ignoreSuspendWrites = true
+        }
+        val applier = PolicyApplier(facade)
+
+        val result = applier.apply(
+            state = policyState(
+                suspendTargets = emptySet(),
+                previouslySuspended = setOf("a")
+            )
+        )
+
+        assertFalse(result.coreFailure)
+        assertTrue(result.supportingFailure)
+        assertTrue(result.verification?.coreIssues?.isEmpty() == true)
+        assertTrue(result.verification?.supportingIssues?.contains("Unsuspend mismatch for a") == true)
+    }
+
     private fun policyState(
         suspendTargets: Set<String>,
         previouslySuspended: Set<String>,
@@ -298,7 +344,10 @@ class PolicyApplierLogicTest {
         private var lockTaskFeatures = 0
         var deviceOwnerLockScreenInfo: CharSequence? = null
         var ignoreAutoTimeWrites: Boolean = false
+        var ignoreSuspendWrites: Boolean = false
+        var ignoreRestrictionWrites: Boolean = false
         val reportedSuspendedOverrides = linkedMapOf<String, Boolean?>()
+        private val userRestrictions = linkedSetOf<String>()
 
         fun seedSuspended(packageName: String) {
             suspendedPackages += packageName
@@ -337,10 +386,12 @@ class PolicyApplierLogicTest {
                 suspended = suspended,
                 blockReasonsByPackage = blockReasonsByPackage
             )
-            if (suspended) {
-                suspendedPackages += packages
-            } else {
-                suspendedPackages -= packages.toSet()
+            if (!ignoreSuspendWrites) {
+                if (suspended) {
+                    suspendedPackages += packages
+                } else {
+                    suspendedPackages -= packages.toSet()
+                }
             }
             return PackageSuspendResult(
                 failedPackages = emptySet(),
@@ -354,9 +405,17 @@ class PolicyApplierLogicTest {
         override fun supportsUserControlDisabledPackages(): Boolean = false
         override fun setUserControlDisabledPackages(packages: List<String>) = Unit
         override fun getUserControlDisabledPackages(): Set<String> = emptySet()
-        override fun addUserRestriction(restriction: String) = Unit
-        override fun clearUserRestriction(restriction: String) = Unit
-        override fun hasUserRestriction(restriction: String): Boolean = false
+        override fun addUserRestriction(restriction: String) {
+            if (!ignoreRestrictionWrites) {
+                userRestrictions += restriction
+            }
+        }
+        override fun clearUserRestriction(restriction: String) {
+            if (!ignoreRestrictionWrites) {
+                userRestrictions -= restriction
+            }
+        }
+        override fun hasUserRestriction(restriction: String): Boolean = userRestrictions.contains(restriction)
         override fun setGlobalSetting(setting: String, value: String) {
             globalSettings[setting] = value
         }

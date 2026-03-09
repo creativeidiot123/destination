@@ -64,6 +64,7 @@ import com.ankit.destination.ui.components.AdminSessionDialog
 import com.ankit.destination.ui.components.AnimatedNumberCounter
 import com.ankit.destination.ui.components.AppPickerDialog
 import com.ankit.destination.ui.components.collectAsStateWithLifecycleCompat
+import com.ankit.destination.ui.components.rememberTapFeedback
 import com.ankit.destination.ui.components.showShortToast
 import androidx.compose.material3.Slider
 import com.ankit.destination.budgets.MAX_EMERGENCY_MINUTES_PER_UNLOCK
@@ -99,6 +100,7 @@ fun GroupDetailScreen(
         )
     )
     val uiState by viewModel.uiState.collectAsStateWithLifecycleCompat()
+    val tapSound = rememberTapFeedback()
 
     var showAppPicker by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
@@ -136,6 +138,7 @@ fun GroupDetailScreen(
             selectedPackageNames = uiState.memberPackages.toSet(),
             onDismiss = { showAppPicker = false },
             onConfirm = { selected ->
+                tapSound()
                 showAppPicker = false
                 viewModel.updateMemberPackages(selected)
                 toast("Group apps updated.")
@@ -151,6 +154,7 @@ fun GroupDetailScreen(
             confirmButton = {
                 TextButton(
                     onClick = {
+                        tapSound()
                         showDeleteDialog = false
                         viewModel.requestDelete()
                     }
@@ -159,7 +163,10 @@ fun GroupDetailScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showDeleteDialog = false }) {
+                TextButton(onClick = {
+                    tapSound()
+                    showDeleteDialog = false
+                }) {
                     Text("Cancel")
                 }
             }
@@ -194,7 +201,10 @@ fun GroupDetailScreen(
             TopAppBar(
                 title = { Text(if (uiState.isNewGroup) "New Group" else "Edit Group") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(onClick = {
+                        tapSound()
+                        onBack()
+                    }) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "Back")
                     }
                 },
@@ -202,6 +212,7 @@ fun GroupDetailScreen(
                     if (!uiState.isNewGroup) {
                         IconButton(
                             onClick = {
+                                tapSound()
                                 showDeleteDialog = true
                                 toast("Delete confirmation opened.")
                             }
@@ -209,7 +220,10 @@ fun GroupDetailScreen(
                             Icon(Icons.Default.Delete, contentDescription = "Delete group")
                         }
                     }
-                    TextButton(onClick = { viewModel.requestSave() }) {
+                    TextButton(onClick = {
+                        tapSound()
+                        viewModel.requestSave()
+                    }) {
                         Text("Save")
                     }
                 }
@@ -249,6 +263,7 @@ fun GroupDetailScreen(
                                 value = uiState.priorityIndex.toString(),
                                 buttonLabel = "Edit"
                             ) {
+                                tapSound()
                                 activeDialog = GroupLimitDialogType.PRIORITY
                             }
                         }
@@ -291,6 +306,7 @@ fun GroupDetailScreen(
                                 Switch(
                                     checked = uiState.scheduleEnabled,
                                     onCheckedChange = { enabled ->
+                                        tapSound()
                                         viewModel.toggleScheduleOption(enabled)
                                         toast(if (enabled) "Group schedule enabled." else "Group schedule disabled.")
                                     }
@@ -331,6 +347,7 @@ fun GroupDetailScreen(
                                                 selected = uiState.scheduleDaysMask and (1 shl index) != 0,
                                                 enabled = blockActive,
                                                 onClick = {
+                                                    tapSound()
                                                     val isSelected = uiState.scheduleDaysMask and (1 shl index) != 0
                                                     viewModel.updateScheduleDay(index, !isSelected)
                                                     toast(
@@ -350,6 +367,7 @@ fun GroupDetailScreen(
                                         Button(
                                             enabled = blockActive,
                                             onClick = {
+                                                tapSound()
                                                 TimePickerDialog(
                                                     context,
                                                     { _, hour, minute ->
@@ -367,6 +385,7 @@ fun GroupDetailScreen(
                                         Button(
                                             enabled = blockActive,
                                             onClick = {
+                                                tapSound()
                                                 TimePickerDialog(
                                                     context,
                                                     { _, hour, minute ->
@@ -405,6 +424,7 @@ fun GroupDetailScreen(
                                 value = minutesLabel(uiState.hourlyLimitMs),
                                 buttonLabel = "Edit"
                             ) {
+                                tapSound()
                                 activeDialog = GroupLimitDialogType.HOURLY
                                 toast("Editing hourly limit.")
                             }
@@ -413,6 +433,7 @@ fun GroupDetailScreen(
                                 value = minutesLabel(uiState.dailyLimitMs),
                                 buttonLabel = "Edit"
                             ) {
+                                tapSound()
                                 activeDialog = GroupLimitDialogType.DAILY
                                 toast("Editing daily limit.")
                             }
@@ -421,6 +442,7 @@ fun GroupDetailScreen(
                                 value = if (uiState.opensPerDay > 0) uiState.opensPerDay.toString() else "No cap",
                                 buttonLabel = "Edit"
                             ) {
+                                tapSound()
                                 activeDialog = GroupLimitDialogType.OPENS
                                 toast("Editing launches per day.")
                             }
@@ -436,6 +458,7 @@ fun GroupDetailScreen(
                                 Switch(
                                     checked = uiState.strictEnabled,
                                     onCheckedChange = { enabled ->
+                                        tapSound()
                                         viewModel.toggleStrictOption(enabled)
                                         toast(if (enabled) "Strict schedule mode enabled." else "Strict schedule mode disabled.")
                                     }
@@ -455,6 +478,7 @@ fun GroupDetailScreen(
                                     Switch(
                                         checked = uiState.allAppsTargetingEnabled,
                                         onCheckedChange = { enabled ->
+                                            tapSound()
                                             viewModel.toggleAllAppsTargeting(enabled)
                                             toast(
                                                 if (enabled) {
@@ -501,6 +525,7 @@ fun GroupDetailScreen(
                                 Switch(
                                     checked = uiState.emergencyEnabled,
                                     onCheckedChange = { enabled ->
+                                        tapSound()
                                         viewModel.toggleEmergency(enabled)
                                         toast(if (enabled) "Emergency access enabled." else "Emergency access disabled.")
                                     }
@@ -513,6 +538,7 @@ fun GroupDetailScreen(
                                     value = uiState.unlocksPerDay.toString(),
                                     buttonLabel = "Edit"
                                 ) {
+                                    tapSound()
                                     activeDialog = GroupLimitDialogType.EMERGENCY_UNLOCKS
                                     toast("Editing emergency unlocks per day.")
                                 }
@@ -521,6 +547,7 @@ fun GroupDetailScreen(
                                     value = uiState.minutesPerUnlock.toString(),
                                     buttonLabel = "Edit"
                                 ) {
+                                    tapSound()
                                     activeDialog = GroupLimitDialogType.EMERGENCY_MINUTES
                                     toast("Editing emergency minutes per unlock.")
                                 }
@@ -547,6 +574,7 @@ fun GroupDetailScreen(
                                 IconButton(
                                     enabled = !groupMemberPickerDisabled,
                                     onClick = {
+                                        tapSound()
                                         showAppPicker = true
                                         toast("Selecting apps for this group.")
                                     }
@@ -579,6 +607,7 @@ fun GroupDetailScreen(
                                         AssistChip(
                                             enabled = !groupMemberPickerDisabled,
                                             onClick = {
+                                                tapSound()
                                                 showAppPicker = true
                                                 toast("Selecting apps for this group.")
                                             },
@@ -630,6 +659,7 @@ private fun SettingRow(
     buttonLabel: String,
     onClick: () -> Unit
 ) {
+    val tapSound = rememberTapFeedback()
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -644,7 +674,10 @@ private fun SettingRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        TextButton(onClick = onClick) {
+        TextButton(onClick = {
+            tapSound()
+            onClick()
+        }) {
             Text(buttonLabel)
         }
     }
@@ -657,6 +690,7 @@ private fun NumberInputDialog(
     onDismiss: () -> Unit,
     onValueSelected: (Int) -> Unit
 ) {
+    val tapSound = rememberTapFeedback()
     val initialValue = when (dialogType) {
         GroupLimitDialogType.HOURLY -> (uiState.hourlyLimitMs / 60_000L).toInt()
         GroupLimitDialogType.DAILY -> (uiState.dailyLimitMs / 60_000L).toInt()
@@ -698,7 +732,10 @@ private fun NumberInputDialog(
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
                 TextButton(
-                    onClick = { isManualInputEnabled = true },
+                    onClick = {
+                        tapSound()
+                        isManualInputEnabled = true
+                    },
                     modifier = Modifier.align(Alignment.CenterHorizontally)
                 ) {
                     AnimatedNumberCounter(
@@ -739,7 +776,10 @@ private fun NumberInputDialog(
                 }
                 Slider(
                     value = (text.toIntOrNull() ?: 0).toFloat(),
-                    onValueChange = { text = it.toInt().toString() },
+                    onValueChange = {
+                        tapSound()
+                        text = it.toInt().toString()
+                    },
                     valueRange = 0f..maxValue.toFloat(),
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -748,6 +788,7 @@ private fun NumberInputDialog(
         confirmButton = {
             TextButton(
                 onClick = {
+                    tapSound()
                     onValueSelected((text.toIntOrNull() ?: 0).coerceIn(0, maxValue))
                 }
             ) {
@@ -755,7 +796,10 @@ private fun NumberInputDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
+            TextButton(onClick = {
+                tapSound()
+                onDismiss()
+            }) {
                 Text("Cancel")
             }
         }
