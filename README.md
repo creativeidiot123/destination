@@ -123,6 +123,8 @@ Entrust it to a reliable person (like a family member or trusted friend) and put
 
 Put it in the Lockey app provided above, and put a 450+ character protection minimum.
 
+Visit https://github.com/creativeidiot123/Completely-kill-your-phone-addiction for in app setup.
+
 ## 🛠️ Tech Stack
 
 ```
