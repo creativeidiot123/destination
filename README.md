@@ -105,6 +105,23 @@ Open Destination, then re-add your Google and device accounts. That's it.
 
 ---
 
+- **The specified Blocker App:**  
+  https://github.com/creativeidiot123/Lockey/releases  
+  This will be used to store your emergency password.
+
+
+### Secure and "Forget" the Password
+
+Generate a highly complex and random password. It should be impossible to memorize.
+
+Example: b$ca{76r>t<3.w7yrqrt6dab?rtfg3iqrdasa
+
+**Crucial Step:** You must not have easy access to this password.
+
+Entrust it to a reliable person (like a family member or trusted friend) and put it in lockey app. Send it to them and then delete all records of it from your own devices and message history. The goal is that you cannot retrieve it on your own.
+
+Put it in the Lockey app provided above, and put a 450+ character protection minimum.
+
 ## 🛠️ Tech Stack
 
 ```
