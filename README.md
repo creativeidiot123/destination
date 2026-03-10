@@ -108,7 +108,7 @@ Open Destination, then re-add your Google and device accounts. That's it.
 
 ### Secure and "Forget" the Password
 
-- **The specified Blocker App:**  
+- **The specified locker App:**  
   https://github.com/creativeidiot123/Lockey/releases  
   This will be used to store your emergency password.
 
