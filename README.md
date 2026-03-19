@@ -92,7 +92,7 @@ adb shell cmd appops set com.ankit.destination GET_USAGE_STATS allow
 ### Step 5 — Grant Accessibility
 
 ```bash
-adb shell settings put secure enabled_accessibility_services com.ankit.destination/com.ankit.destination.YourAccessibilityService
+adb shell settings put secure enabled_accessibility_services com.ankit.destination/.enforce.FocusEnforcementService
 ```
 
 ```bash
