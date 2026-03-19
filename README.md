@@ -83,13 +83,19 @@ adb shell dumpsys account
 adb shell dpm set-device-owner com.ankit.destination/.admin.FocusDeviceAdminReceiver
 ```
 
-### Step 4 — Grant Usage Access
+### Step 4 — Allow Restricted Settings
+
+```bash
+adb shell cmd appops set com.ankit.destination ACCESS_RESTRICTED_SETTINGS allow
+```
+
+### Step 5 — Grant Usage Access
 
 ```bash
 adb shell cmd appops set com.ankit.destination GET_USAGE_STATS allow
 ```
 
-### Step 5 — Grant Accessibility
+### Step 6 — Grant Accessibility
 
 ```bash
 adb shell settings put secure enabled_accessibility_services com.ankit.destination/.enforce.FocusEnforcementService
@@ -99,7 +105,13 @@ adb shell settings put secure enabled_accessibility_services com.ankit.destinati
 adb shell settings put secure accessibility_enabled 1
 ```
 
-### Step 6 — You're done
+### Step 7 — Grant Notification access
+
+```bash
+adb shell cmd notification allow_listener com.ankit.destination/com.ankit.destination.music.MusicPlaybackNotificationListenerService
+```
+
+### Step 8 — You're done
 
 Open Destination, then re-add your Google and device accounts. That's it.
 
