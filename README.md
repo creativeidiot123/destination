@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="idea/ic_launcher.png" alt="Destination App Icon" width="120" height="120">
+  <img src=".idea/ic_launcher.png" alt="Destination App Icon" width="120" height="120">
 </p>
 
 <h1 align="center">Destination 🛡️</h1>
